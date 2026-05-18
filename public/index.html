@@ -1150,7 +1150,7 @@
       // ─── GAME LOGIC ───
       function getKnownAnswers() {
         return state.log
-          .filter((entry) => entry.speaker === "tars" && entry.turn?.attributeKey && entry.turn?.userAnswer)
+          .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question" && entry.turn.attributeKey && entry.turn.userAnswer)
           .map((entry) => ({ attributeKey: entry.turn.attributeKey, answer: entry.turn.userAnswer }));
       }
 
@@ -1335,6 +1335,23 @@ Available unused attributes: ${JSON.stringify(gameState.unusedAttributes.map((at
         }
       }
 
+      function linkAnswerToCurrentTarsTurn(previousAnswer) {
+        const currentTurn = state.turn;
+        const matchingLogEntry = [...state.log].reverse().find((entry) => {
+          if (entry.speaker !== "tars" || !entry.turn) return false;
+          if (!currentTurn) return entry.turn.action === "question" && entry.turn.attributeKey && !entry.turn.userAnswer;
+          return entry.turn.turn === currentTurn.turn && entry.turn.action === currentTurn.action;
+        });
+        const answeredTurn = matchingLogEntry?.turn || currentTurn || { turn: questionCount() };
+        answeredTurn.userAnswer = previousAnswer;
+        if (matchingLogEntry?.turn) {
+          state.turn = matchingLogEntry.turn;
+        } else if (state.turn) {
+          state.turn.userAnswer = previousAnswer;
+        }
+        return answeredTurn;
+      }
+
       async function startGame(mode, domain) {
         const game = await createGameSession(mode, domain);
         const firstTurn = await getNextTurn(game);
@@ -1343,10 +1360,7 @@ Available unused attributes: ${JSON.stringify(gameState.unusedAttributes.map((at
       }
 
       async function advanceGame(gameId, previousAnswer, gameState = {}) {
-        const lastTurn = state.turn ? { ...state.turn, userAnswer: previousAnswer } : { userAnswer: previousAnswer, turn: questionCount() };
-        if (state.turn?.action === "question") state.turn.userAnswer = previousAnswer;
-        const currentLogTurn = [...state.log].reverse().find((entry) => entry.speaker === "tars" && entry.turn?.turn === state.turn?.turn);
-        if (currentLogTurn?.turn?.action === "question") currentLogTurn.turn.userAnswer = previousAnswer;
+        const lastTurn = linkAnswerToCurrentTarsTurn(previousAnswer);
         await saveTurn(gameId, lastTurn);
         if (state.pendingGuess) {
           const guessName = state.pendingGuess.entityName || lastTurn.guess?.entityName || "your answer";

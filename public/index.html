@@ -998,7 +998,8 @@
     "firebase/app": "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js",
     "firebase/functions": "https://www.gstatic.com/firebasejs/12.13.0/firebase-functions.js",
     "firebase/firestore": "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js",
-    "firebase/auth": "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js"
+    "firebase/auth": "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js",
+    "firebase/ai": "https://www.gstatic.com/firebasejs/12.13.0/firebase-ai.js"
   }
 }
     </script>
@@ -1036,8 +1037,8 @@
 
     <script type="module">
       import { initializeApp } from "firebase/app";
-      import { getFunctions, httpsCallable } from "firebase/functions";
-      import { getFirestore } from "firebase/firestore";
+      import { getAI, getGenerativeModel, GoogleAIBackend } from "firebase/ai";
+      import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, where, getDocs, orderBy } from "firebase/firestore";
       import { getAuth, signInAnonymously } from "firebase/auth";
 
       const firebaseConfig = {
@@ -1062,14 +1063,325 @@
       ];
 
       const app = initializeApp(firebaseConfig);
-      getFirestore(app);
+      const db = getFirestore(app);
+      const ai = getAI(app, { backend: new GoogleAIBackend() });
+      const model = getGenerativeModel(ai, { model: "gemini-2.0-flash" });
       const auth = getAuth(app);
-      const functions = getFunctions(app);
-      const api = {
-        startGame: httpsCallable(functions, "startGame"),
-        advanceGame: httpsCallable(functions, "advanceGame"),
-        getGame: httpsCallable(functions, "getGame")
+
+      signInAnonymously(auth).catch((error) => {
+        console.warn("Anonymous auth failed; continuing with open test rules.", error);
+      });
+
+      // ─── MOCK SEED DATA ───
+      const ATTRIBUTES = [
+        { key: "is_fictional", label: "Is fictional", question: "Is your character fictional?" },
+        { key: "from_video_game", label: "From a video game", question: "Did your character originate in a video game?" },
+        { key: "from_movie", label: "From a movie", question: "Is your character strongly associated with movies?" },
+        { key: "is_human", label: "Is human", question: "Is your character human?" },
+        { key: "is_superhero", label: "Is a superhero", question: "Is your character a superhero?" },
+        { key: "wears_cape", label: "Wears a cape", question: "Does your character wear a cape?" },
+        { key: "uses_weapons", label: "Uses weapons", question: "Does your character commonly use weapons?" },
+        { key: "associated_with_nintendo", label: "Associated with Nintendo", question: "Is your character associated with Nintendo?" },
+        { key: "is_animated", label: "Is animated", question: "Is your character usually animated or drawn?" },
+        { key: "has_superpowers", label: "Has superpowers", question: "Does your character have superpowers?" },
+        { key: "is_mascot_character", label: "Mascot character", question: "Is your character a mascot character?" },
+        { key: "is_antagonist", label: "Is an antagonist", question: "Is your character usually an antagonist?" },
+        { key: "wears_red", label: "Wears red", question: "Is red a major part of your character's look?" },
+        { key: "wears_armor", label: "Wears armor", question: "Does your character wear armor?" },
+        { key: "is_fast", label: "Is fast", question: "Is your character known for being fast?" }
+      ];
+
+      const CHARACTERS = [
+        { id: "mario", canonicalName: "Mario", entityTypes: ["video_game", "nintendo", "mascot"], aliases: ["Jumpman"], description: "Nintendo's red-clad platforming hero.", popularityPrior: 1 },
+        { id: "sonic", canonicalName: "Sonic", entityTypes: ["video_game", "mascot"], aliases: ["Sonic the Hedgehog"], description: "A blue hedgehog famous for speed.", popularityPrior: 0.98 },
+        { id: "kratos", canonicalName: "Kratos", entityTypes: ["video_game", "warrior"], aliases: ["Ghost of Sparta"], description: "The weapon-wielding protagonist of God of War.", popularityPrior: 0.86 },
+        { id: "batman", canonicalName: "Batman", entityTypes: ["comic", "superhero", "detective"], aliases: ["Bruce Wayne"], description: "A caped DC vigilante detective.", popularityPrior: 0.99 },
+        { id: "superman", canonicalName: "Superman", entityTypes: ["comic", "superhero", "alien"], aliases: ["Clark Kent", "Kal-El"], description: "A caped DC superhero with immense powers.", popularityPrior: 0.99 },
+        { id: "spider-man", canonicalName: "Spider-Man", entityTypes: ["comic", "superhero"], aliases: ["Peter Parker", "Spiderman"], description: "A web-slinging Marvel superhero.", popularityPrior: 0.98 },
+        { id: "glados", canonicalName: "GLaDOS", entityTypes: ["video_game", "ai", "antagonist"], aliases: ["Genetic Lifeform and Disk Operating System"], description: "The sarcastic AI antagonist from Portal.", popularityPrior: 0.78 },
+        { id: "master-chief", canonicalName: "Master Chief", entityTypes: ["video_game", "soldier"], aliases: ["John-117"], description: "The armored Spartan protagonist of Halo.", popularityPrior: 0.92 },
+        { id: "link", canonicalName: "Link", entityTypes: ["video_game", "nintendo", "hero"], aliases: ["Hero of Hyrule"], description: "Nintendo's sword-wielding hero of Hyrule.", popularityPrior: 0.97 },
+        { id: "samus", canonicalName: "Samus", entityTypes: ["video_game", "nintendo", "bounty_hunter"], aliases: ["Samus Aran"], description: "The armored bounty hunter from Metroid.", popularityPrior: 0.88 },
+        { id: "pikachu", canonicalName: "Pikachu", entityTypes: ["video_game", "nintendo", "mascot"], aliases: ["Pika"], description: "The electric Pokemon mascot.", popularityPrior: 0.99 },
+        { id: "cloud-strife", canonicalName: "Cloud Strife", entityTypes: ["video_game", "swordsman"], aliases: ["Cloud"], description: "The oversized-sword protagonist from Final Fantasy VII.", popularityPrior: 0.88 },
+        { id: "geralt-of-rivia", canonicalName: "Geralt of Rivia", entityTypes: ["video_game", "fantasy", "hunter"], aliases: ["Geralt", "The White Wolf"], description: "A monster hunter from The Witcher.", popularityPrior: 0.9 },
+        { id: "aloy", canonicalName: "Aloy", entityTypes: ["video_game", "hunter"], aliases: ["Aloy of the Nora"], description: "The bow-wielding hero of Horizon.", popularityPrior: 0.82 },
+        { id: "ellie", canonicalName: "Ellie", entityTypes: ["video_game", "survivor"], aliases: ["Ellie Williams"], description: "A survivor from The Last of Us.", popularityPrior: 0.84 },
+        { id: "lara-croft", canonicalName: "Lara Croft", entityTypes: ["video_game", "adventurer"], aliases: ["Tomb Raider"], description: "An adventuring archaeologist and treasure hunter.", popularityPrior: 0.91 },
+        { id: "nathan-drake", canonicalName: "Nathan Drake", entityTypes: ["video_game", "adventurer"], aliases: ["Nate Drake"], description: "A wisecracking treasure hunter from Uncharted.", popularityPrior: 0.84 },
+        { id: "darth-vader", canonicalName: "Darth Vader", entityTypes: ["movie", "villain", "sci_fi"], aliases: ["Anakin Skywalker"], description: "The armored Sith Lord from Star Wars.", popularityPrior: 0.99 },
+        { id: "indiana-jones", canonicalName: "Indiana Jones", entityTypes: ["movie", "adventurer"], aliases: ["Indy"], description: "A whip-carrying archaeologist adventurer.", popularityPrior: 0.95 },
+        { id: "hermione-granger", canonicalName: "Hermione Granger", entityTypes: ["book", "movie", "wizard"], aliases: ["Hermione"], description: "A brilliant witch from Harry Potter.", popularityPrior: 0.93 },
+        { id: "sherlock-holmes", canonicalName: "Sherlock Holmes", entityTypes: ["book", "detective"], aliases: ["Holmes"], description: "A legendary consulting detective.", popularityPrior: 0.92 },
+        { id: "jack-sparrow", canonicalName: "Jack Sparrow", entityTypes: ["movie", "pirate"], aliases: ["Captain Jack Sparrow"], description: "A chaotic pirate captain.", popularityPrior: 0.92 },
+        { id: "gandalf", canonicalName: "Gandalf", entityTypes: ["book", "movie", "wizard"], aliases: ["Mithrandir", "Gandalf the Grey"], description: "A wizard from Middle-earth.", popularityPrior: 0.96 },
+        { id: "frodo", canonicalName: "Frodo", entityTypes: ["book", "movie", "hobbit"], aliases: ["Frodo Baggins"], description: "The ring-bearer hobbit from Middle-earth.", popularityPrior: 0.9 },
+        { id: "tony-stark", canonicalName: "Tony Stark", entityTypes: ["comic", "superhero", "inventor"], aliases: ["Iron Man"], description: "A genius inventor inside a powered armor suit.", popularityPrior: 0.98 }
+      ];
+
+      const ASSERTIONS = {
+        "mario": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "no", "associated_with_nintendo": "yes", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "yes", "is_antagonist": "no", "wears_red": "yes", "wears_armor": "no", "is_fast": "kind_of" },
+        "sonic": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "no", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "no", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "kind_of", "is_mascot_character": "yes", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "yes" },
+        "kratos": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "kind_of", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "yes", "wears_armor": "kind_of", "is_fast": "no" },
+        "batman": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "kind_of", "is_human": "yes", "is_superhero": "yes", "wears_cape": "yes", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "kind_of", "is_fast": "no" },
+        "superman": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "kind_of", "is_human": "kind_of", "is_superhero": "yes", "wears_cape": "yes", "uses_weapons": "no", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "yes", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "kind_of", "wears_armor": "no", "is_fast": "yes" },
+        "spider-man": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "kind_of", "is_human": "yes", "is_superhero": "yes", "wears_cape": "no", "uses_weapons": "kind_of", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "yes", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "yes", "wears_armor": "no", "is_fast": "yes" },
+        "glados": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "no", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "no", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "yes", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "master-chief": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "kind_of", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "yes", "is_fast": "no" },
+        "link": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "kind_of", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "yes", "is_animated": "yes", "has_superpowers": "kind_of", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "kind_of", "is_fast": "no" },
+        "samus": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "yes", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "yes", "is_fast": "no" },
+        "pikachu": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "kind_of", "is_human": "no", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "no", "associated_with_nintendo": "yes", "is_animated": "yes", "has_superpowers": "yes", "is_mascot_character": "yes", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "yes" },
+        "cloud-strife": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "kind_of", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "kind_of", "is_fast": "no" },
+        "geralt-of-rivia": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "kind_of", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "kind_of", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "kind_of", "is_fast": "no" },
+        "aloy": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "kind_of", "is_fast": "no" },
+        "ellie": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "kind_of", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "lara-croft": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "yes", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "nathan-drake": { "is_fictional": "yes", "from_video_game": "yes", "from_movie": "no", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "darth-vader": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "yes", "is_superhero": "no", "wears_cape": "yes", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "yes", "is_mascot_character": "no", "is_antagonist": "yes", "wears_red": "no", "wears_armor": "yes", "is_fast": "no" },
+        "indiana-jones": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "no", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "hermione-granger": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "no", "has_superpowers": "yes", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "sherlock-holmes": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "kind_of", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "kind_of", "associated_with_nintendo": "no", "is_animated": "no", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "jack-sparrow": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "yes", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "no", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "kind_of", "wears_armor": "no", "is_fast": "no" },
+        "gandalf": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "kind_of", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "no", "has_superpowers": "yes", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "frodo": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "kind_of", "is_superhero": "no", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "no", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "no", "wears_armor": "no", "is_fast": "no" },
+        "tony-stark": { "is_fictional": "yes", "from_video_game": "no", "from_movie": "yes", "is_human": "yes", "is_superhero": "yes", "wears_cape": "no", "uses_weapons": "yes", "associated_with_nintendo": "no", "is_animated": "yes", "has_superpowers": "no", "is_mascot_character": "no", "is_antagonist": "no", "wears_red": "yes", "wears_armor": "yes", "is_fast": "yes" }
       };
+
+      // ─── GAME LOGIC ───
+      function getKnownAnswers() {
+        return state.log
+          .filter((entry) => entry.speaker === "tars" && entry.turn?.attributeKey && entry.turn?.userAnswer)
+          .map((entry) => ({ attributeKey: entry.turn.attributeKey, answer: entry.turn.userAnswer }));
+      }
+
+      function filterCandidates(knownAnswers = getKnownAnswers()) {
+        return CHARACTERS
+          .map((character) => {
+            const score = knownAnswers.reduce((total, answer) => {
+              const expected = ASSERTIONS[character.id]?.[answer.attributeKey];
+              if (expected === answer.answer) return total + 2;
+              if (expected === "kind_of" || answer.answer === "kind_of") return total + 0.75;
+              return total - 2;
+            }, character.popularityPrior || 0);
+            const hardMismatch = knownAnswers.some((answer) => {
+              const expected = ASSERTIONS[character.id]?.[answer.attributeKey];
+              return expected && expected !== "kind_of" && answer.answer !== "kind_of" && expected !== answer.answer;
+            });
+            return { ...character, score, hardMismatch };
+          })
+          .filter((candidate) => !candidate.hardMismatch || knownAnswers.length > 8)
+          .sort((a, b) => b.score - a.score || b.popularityPrior - a.popularityPrior);
+      }
+
+      function bestAttributeFor(candidates, knownAnswers) {
+        const used = new Set(knownAnswers.map((answer) => answer.attributeKey));
+        return ATTRIBUTES
+          .filter((attribute) => !used.has(attribute.key))
+          .map((attribute) => {
+            const counts = candidates.reduce((acc, candidate) => {
+              const value = ASSERTIONS[candidate.id]?.[attribute.key] || "unknown";
+              acc[value] = (acc[value] || 0) + 1;
+              return acc;
+            }, { yes: 0, no: 0, kind_of: 0, unknown: 0 });
+            const known = counts.yes + counts.no + counts.kind_of;
+            const split = known ? 1 - Math.abs(counts.yes - counts.no) / known : 0;
+            return { attribute, split, known };
+          })
+          .sort((a, b) => b.split - a.split || b.known - a.known)[0]?.attribute;
+      }
+
+      function normalizeTurn(turn, gameState) {
+        const fallback = generateFallbackQuestion(gameState);
+        const action = ["question", "guess", "clarification", "game_over"].includes(turn?.action) ? turn.action : fallback.action;
+        const status = ["in_progress", "won", "lost"].includes(turn?.status) ? turn.status : fallback.status;
+        const questionText = String(turn?.questionText || fallback.questionText || "").trim();
+        const attributeKey = ATTRIBUTES.some((attribute) => attribute.key === turn?.attributeKey) ? turn.attributeKey : fallback.attributeKey;
+        const entity = CHARACTERS.find((character) => character.id === turn?.guess?.entityId || character.canonicalName.toLowerCase() === String(turn?.guess?.entityName || "").toLowerCase()) || fallback.guess;
+        return {
+          action,
+          status,
+          turn: Math.min(MAX_QUESTIONS, Number(turn?.turn || fallback.turn || 1)),
+          questionText: questionText.endsWith("?") || status !== "in_progress" ? questionText : `${questionText}?`,
+          spokenText: String(turn?.spokenText || questionText || fallback.spokenText || "").trim(),
+          confidenceBand: turn?.confidenceBand || fallback.confidenceBand,
+          attributeKey,
+          guess: action === "guess" || status !== "in_progress" ? {
+            entityId: entity?.id || turn?.guess?.entityId || "",
+            entityName: entity?.canonicalName || turn?.guess?.entityName || extractGuessName(questionText)
+          } : undefined
+        };
+      }
+
+      function buildTurnPrompt(gameState) {
+        const candidates = gameState.candidates.slice(0, 8).map((candidate) => ({
+          id: candidate.id,
+          name: candidate.canonicalName,
+          description: candidate.description,
+          traits: ASSERTIONS[candidate.id]
+        }));
+        return `You are TARS, a 20 Questions game engine. The player is thinking of a character.
+Return only JSON with this shape:
+{"action":"question|guess","status":"in_progress","turn":number,"questionText":"...","spokenText":"...","confidenceBand":"early|narrowing|high_confidence|final_guess","attributeKey":"one unused attribute key when asking","guess":{"entityId":"...","entityName":"..."}}
+Ask one yes/kind of/no question using an unused attribute, or make a guess when confidence is high.
+Turn number: ${gameState.turn}
+Known answers: ${JSON.stringify(gameState.knownAnswers)}
+Remaining candidates: ${JSON.stringify(candidates)}
+Available unused attributes: ${JSON.stringify(gameState.unusedAttributes.map((attribute) => ({ key: attribute.key, question: attribute.question })))}`;
+      }
+
+      function generateFallbackQuestion(gameState) {
+        const candidates = gameState.candidates.length ? gameState.candidates : CHARACTERS;
+        const top = candidates[0];
+        const shouldGuess = gameState.turn >= MAX_QUESTIONS || candidates.length <= 1 || (gameState.turn >= 12 && top?.score > (candidates[1]?.score ?? -Infinity) + 4);
+        if (shouldGuess && top) {
+          return {
+            action: "guess",
+            status: "in_progress",
+            turn: gameState.turn,
+            questionText: `Is it ${top.canonicalName}?`,
+            spokenText: `Is it ${top.canonicalName}?`,
+            confidenceBand: gameState.turn >= MAX_QUESTIONS ? "final_guess" : "high_confidence",
+            guess: top
+          };
+        }
+        const attribute = bestAttributeFor(candidates, gameState.knownAnswers) || gameState.unusedAttributes[0] || ATTRIBUTES[0];
+        return {
+          action: "question",
+          status: "in_progress",
+          turn: gameState.turn,
+          questionText: attribute.question,
+          spokenText: attribute.question,
+          confidenceBand: gameState.turn < 5 ? "early" : gameState.turn < 12 ? "narrowing" : "high_confidence",
+          attributeKey: attribute.key
+        };
+      }
+
+      function buildGameState(game = {}) {
+        const knownAnswers = getKnownAnswers();
+        const candidates = filterCandidates(knownAnswers);
+        const used = new Set(knownAnswers.map((answer) => answer.attributeKey));
+        return {
+          ...game,
+          turn: Math.min(MAX_QUESTIONS, knownAnswers.length + 1),
+          knownAnswers,
+          candidates,
+          unusedAttributes: ATTRIBUTES.filter((attribute) => !used.has(attribute.key))
+        };
+      }
+
+      // ─── FIRESTORE HELPERS ───
+      async function createGameSession(mode, domain) {
+        const gameRef = doc(collection(db, "games"));
+        const game = {
+          id: gameRef.id,
+          mode,
+          domain: domain || "character",
+          status: "in_progress",
+          turn: 0,
+          maxTurns: MAX_QUESTIONS,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        await setDoc(gameRef, game);
+        return game;
+      }
+
+      async function saveTurn(gameId, turn) {
+        const turnsRef = collection(db, "games", gameId, "turns");
+        await addDoc(turnsRef, { ...turn, createdAt: new Date() });
+        await setDoc(doc(db, "games", gameId), { turn: turn.turn || 0, updatedAt: new Date(), status: turn.status || "in_progress" }, { merge: true });
+      }
+
+      async function getTurns(gameId) {
+        const turnsQuery = query(collection(db, "games", gameId, "turns"), orderBy("createdAt"));
+        const snapshot = await getDocs(turnsQuery);
+        return snapshot.docs.map((turnDoc) => ({ id: turnDoc.id, ...turnDoc.data() }));
+      }
+
+      async function getGame(gameId) {
+        const gameSnap = await getDoc(doc(db, "games", gameId));
+        if (!gameSnap.exists()) return null;
+        return { id: gameSnap.id, ...gameSnap.data(), turns: await getTurns(gameId) };
+      }
+
+      async function findGamesByStatus(status) {
+        const gamesQuery = query(collection(db, "games"), where("status", "==", status));
+        const snapshot = await getDocs(gamesQuery);
+        return snapshot.docs.map((gameDoc) => ({ id: gameDoc.id, ...gameDoc.data() }));
+      }
+
+      // ─── AI LOGIC WRAPPER ───
+      async function queryGemini(systemPrompt, userPrompt) {
+        const result = await model.generateContent({
+          contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] }],
+          generationConfig: {
+            temperature: 0.6,
+            responseMimeType: "application/json"
+          }
+        });
+        return JSON.parse(result.response.text());
+      }
+
+      async function getNextTurn(game = {}) {
+        const gameState = buildGameState(game);
+        const systemPrompt = "You are TARS, concise and strategic. Return valid JSON only.";
+        const prompt = buildTurnPrompt(gameState);
+        try {
+          const response = await queryGemini(systemPrompt, prompt);
+          return normalizeTurn(response, gameState);
+        } catch (error) {
+          console.warn("Gemini turn generation failed; using fallback strategy.", error);
+          return generateFallbackQuestion(gameState);
+        }
+      }
+
+      async function startGame(mode, domain) {
+        const game = await createGameSession(mode, domain);
+        const firstTurn = await getNextTurn(game);
+        await saveTurn(game.id, firstTurn);
+        return { gameId: game.id, turn: firstTurn };
+      }
+
+      async function advanceGame(gameId, previousAnswer, gameState = {}) {
+        const lastTurn = state.turn ? { ...state.turn, userAnswer: previousAnswer } : { userAnswer: previousAnswer, turn: questionCount() };
+        if (state.turn?.action === "question") state.turn.userAnswer = previousAnswer;
+        const currentLogTurn = [...state.log].reverse().find((entry) => entry.speaker === "tars" && entry.turn?.turn === state.turn?.turn);
+        if (currentLogTurn?.turn?.action === "question") currentLogTurn.turn.userAnswer = previousAnswer;
+        await saveTurn(gameId, lastTurn);
+        if (state.pendingGuess) {
+          const guessName = state.pendingGuess.entityName || lastTurn.guess?.entityName || "your answer";
+          const final = state.pendingGuess.final || lastTurn.turn >= MAX_QUESTIONS;
+          if (previousAnswer === "yes") {
+            const wonTurn = {
+              action: "game_over",
+              status: "won",
+              turn: lastTurn.turn,
+              questionText: `I knew it. It was ${guessName}.`,
+              spokenText: `I knew it. It was ${guessName}.`,
+              confidenceBand: "final_guess",
+              guess: lastTurn.guess || { entityName: guessName }
+            };
+            await saveTurn(gameId, wonTurn);
+            return wonTurn;
+          }
+          if (final) {
+            const lostTurn = {
+              action: "game_over",
+              status: "lost",
+              turn: MAX_QUESTIONS,
+              questionText: "I'm stumped.",
+              spokenText: "I'm stumped.",
+              confidenceBand: "final_guess"
+            };
+            await saveTurn(gameId, lostTurn);
+            return lostTurn;
+          }
+        }
+        const game = { ...gameState, id: gameId, ...(await getGame(gameId) || {}) };
+        const nextTurn = await getNextTurn(game);
+        await saveTurn(gameId, nextTurn);
+        return nextTurn;
+      }
 
       const appEl = document.querySelector("#app");
       const avatarTemplate = document.querySelector("#tars-avatar-template");
@@ -1421,10 +1733,6 @@
         });
       }
 
-      async function ensureAuth() {
-        if (!auth.currentUser) await signInAnonymously(auth);
-      }
-
       async function startNewGame() {
         if (state.busy) return;
         if (state.mode === "user_thinks" && !state.category) {
@@ -1443,15 +1751,12 @@
         clearSavedGame();
         render();
         try {
-          await ensureAuth();
-          const payload = { mode: state.mode };
-          if (state.mode === "user_thinks" && state.category) payload.domain = state.category;
-          const result = await api.startGame(payload);
-          state.gameId = result.data.gameId;
-          applyTurn(result.data.turn, { append: true });
+          const result = await startGame(state.mode, state.mode === "user_thinks" ? state.category : "character");
+          state.gameId = result.gameId;
+          applyTurn(result.turn, { append: true });
           state.screen = "game";
           saveGame();
-          speakTurn(result.data.turn);
+          speakTurn(result.turn);
         } catch (error) {
           state.error = readableError(error, "Network error. TARS failed to start the game.");
         } finally {
@@ -1496,10 +1801,10 @@
         saveGame();
         render();
         try {
-          const result = await api.advanceGame({ gameId: state.gameId, previousAnswer: answer });
-          applyTurn(result.data.turn, { append: true });
+          const result = await advanceGame(state.gameId, answer, buildGameState({ id: state.gameId }));
+          applyTurn(result, { append: true });
           saveGame();
-          speakTurn(result.data.turn);
+          speakTurn(result);
         } catch (error) {
           state.error = readableError(error, "Network error. TARS could not process your answer.");
         } finally {
@@ -1520,13 +1825,11 @@
         state.log.push({ id: id(), speaker: "user", text: correct ? "Yes." : state.finalAnswerName ? `No. It was ${state.finalAnswerName}.` : "No.", answer: correct ? "yes" : "no" });
         state.busy = true;
         state.error = null;
-        state.pendingGuess = null;
         state.revealFinalInput = false;
         saveGame();
         render();
         try {
-          const result = await api.advanceGame({ gameId: state.gameId, previousAnswer: correct ? "yes" : "no" });
-          const turn = result.data.turn;
+          const turn = await advanceGame(state.gameId, correct ? "yes" : "no", buildGameState({ id: state.gameId }));
           if (turn.status === "lost" && state.finalAnswerName) {
             turn.questionText = `I'm stumped. It was ${state.finalAnswerName}.`;
           }

@@ -1324,14 +1324,19 @@ Available unused attributes: ${JSON.stringify(gameState.unusedAttributes.map((at
 
       async function getNextTurn(game = {}) {
         const gameState = buildGameState(game);
-        const systemPrompt = "You are TARS, concise and strategic. Return valid JSON only.";
-        const prompt = buildTurnPrompt(gameState);
+        const fallback = generateFallbackQuestion(gameState);
         try {
-          const response = await queryGemini(systemPrompt, prompt);
-          return normalizeTurn(response, gameState);
+          const prompt = `Rephrase this 20 Questions question in TARS voice (concise, dark humor, very short, 5-10 words max). Return only the text, no JSON, no explanation.\n\nQuestion: "${fallback.questionText}"`;
+          const response = await queryGemini("You are TARS. Concise, dark humor, brief. Rephrase questions in character.", prompt);
+          const spokenText = (typeof response === "string" ? response : response?.spokenText || response?.questionText || fallback.spokenText).trim();
+          return {
+            ...fallback,
+            spokenText: spokenText.length > 5 ? spokenText : fallback.spokenText,
+            questionText: fallback.questionText
+          };
         } catch (error) {
-          console.warn("Gemini turn generation failed; using fallback strategy.", error);
-          return generateFallbackQuestion(gameState);
+          console.warn("Gemini rephrase failed; using fallback question.", error);
+          return fallback;
         }
       }
 

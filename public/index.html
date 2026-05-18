@@ -117,13 +117,15 @@
       import { getAuth, signInAnonymously } from "firebase/auth";
 
       const firebaseConfig = {
-        apiKey: "YOUR_API_KEY",
-        authDomain: "YOUR_PROJECT.firebaseapp.com",
-        projectId: "tars-20q",
-        storageBucket: "YOUR_PROJECT.appspot.com",
-        messagingSenderId: "YOUR_SENDER_ID",
-        appId: "YOUR_APP_ID"
+        apiKey: "AIzaSyBDwWJEkHG6Deksgg4PsJLwFxVgiOuMWts",
+        authDomain: "tars-20-questions.firebaseapp.com",
+        projectId: "tars-20-questions",
+        storageBucket: "tars-20-questions.firebasestorage.app",
+        messagingSenderId: "984473342533",
+        appId: "1:984473342533:web:95a00955b409343a51492c",
+        measurementId: "G-ELJ7V7BN0T"
       };
+      const GEMINI_MODEL = "gemini-2.0-flash-001";
 
       const app = initializeApp(firebaseConfig);
       getFirestore(app);

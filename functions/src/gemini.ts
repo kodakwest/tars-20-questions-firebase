@@ -1,12 +1,13 @@
-import { GoogleGenAI } from "@google/genai";
+import { VertexAI } from "@google-cloud/vertexai";
 import { answerInterpreterSchema, geminiTurnResponseSchema } from "./schemas.js";
 import { buildStrategistPrompt } from "./prompts.js";
 import type { AnswerValue, GameReferencePack, GeminiTurnResponse } from "./types.js";
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash-001";
+const PROJECT_ID = process.env.GCLOUD_PROJECT || "tars-20-questions";
+const LOCATION = "us-central1";
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const vertexAI = new VertexAI({ project: PROJECT_ID, location: LOCATION });
 
 export async function queryStrategist(
   systemPrompt: string,
@@ -15,21 +16,25 @@ export async function queryStrategist(
 ): Promise<GeminiTurnResponse> {
   const fullPrompt = buildStrategistPrompt(referencePack, conversationHistory);
 
-  const response = await ai.models.generateContent({
+  const model = vertexAI.getGenerativeModel({
     model: GEMINI_MODEL,
-    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-    config: {
-      systemInstruction: { parts: [{ text: systemPrompt }] },
+    systemInstruction: systemPrompt,
+    generationConfig: {
       temperature: 0.6,
       maxOutputTokens: 1024,
-      responseMimeType: "application/json"
-    }
+      responseMimeType: "application/json",
+    },
   });
 
-  const text = response.text;
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+  });
+
+  const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     throw new Error("Gemini returned an empty response");
   }
+
   const parsed: unknown = JSON.parse(text);
   return geminiTurnResponseSchema.parse(parsed);
 }
@@ -49,30 +54,33 @@ export async function queryAnswerInterpreter(userRawInput: string): Promise<Answ
     return "unknown";
   }
 
-  if (!GEMINI_API_KEY) {
-    return "unknown";
-  }
+  // Fallback: ask Gemini to interpret
+  try {
+    const model = vertexAI.getGenerativeModel({
+      model: GEMINI_MODEL,
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 64,
+        responseMimeType: "application/json",
+      },
+    });
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: [{
-      role: "user",
-      parts: [{
-        text: `Normalize this 20 Questions answer to JSON {"answer":"yes|no|kind_of|unknown"}: ${userRawInput}`
-      }]
-    }],
-    config: {
-      temperature: 0,
-      maxOutputTokens: 64,
-      responseMimeType: "application/json"
-    }
-  });
-  const text = response.text;
-  if (!text) {
+    const result = await model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [{
+          text: `Normalize this 20 Questions answer to JSON {"answer":"yes|no|kind_of|unknown"}: ${userRawInput}`
+        }]
+      }],
+    });
+
+    const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return "unknown";
+    const parsed: unknown = JSON.parse(text);
+    return answerInterpreterSchema.parse(parsed).answer;
+  } catch {
     return "unknown";
   }
-  const parsed: unknown = JSON.parse(text);
-  return answerInterpreterSchema.parse(parsed).answer;
 }
 
 export function validateResponse(response: unknown): { valid: boolean; error?: string } {

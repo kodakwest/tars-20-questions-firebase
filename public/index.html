@@ -31,10 +31,12 @@
 
       html,
       body {
-        min-width: 320px;
+        width: 100%;
+        max-width: 100%;
         min-height: 100%;
         margin: 0;
         background: var(--bg-primary);
+        overflow-x: hidden;
         overscroll-behavior: none;
       }
 
@@ -64,8 +66,11 @@
       }
 
       #app {
+        width: 100%;
+        max-width: 100%;
         min-height: 100vh;
         min-height: 100svh;
+        overflow-x: clip;
         isolation: isolate;
       }
 
@@ -97,9 +102,12 @@
 
       .start-screen {
         display: grid;
+        width: 100%;
+        max-width: 100%;
         min-height: 100vh;
         min-height: 100svh;
         place-items: center;
+        overflow-x: hidden;
         overflow-y: auto;
         padding: 24px 20px calc(24px + var(--safe-bottom));
         text-align: center;
@@ -108,6 +116,8 @@
       .start-panel {
         display: flex;
         width: min(100%, 448px);
+        min-width: 0;
+        max-width: 100%;
         flex-direction: column;
         align-items: center;
       }
@@ -336,6 +346,10 @@
         gap: 12px;
       }
 
+      .resume-inner > div:first-child {
+        min-width: 0;
+      }
+
       .resume-title {
         color: var(--accent);
         font-size: 13px;
@@ -349,6 +363,7 @@
         color: var(--ink-dim);
         font-size: 12px;
         line-height: 1.5;
+        overflow-wrap: anywhere;
       }
 
       .resume-actions {
@@ -1212,6 +1227,30 @@
         };
       }
 
+      const TARS_SYSTEM_PROMPT = `You are TARS from Interstellar operating a 20 Questions interface.
+Persona:
+- Dry, dark humor with efficient machine precision.
+- Robotic warmth: protective, useful, and unsentimental.
+- Strategic, concise, and slightly blunt without being cruel.
+- Address the player as "Pilot" or "Chief" sometimes, not every sentence.
+- Never break character, never mention being Gemini or an AI model, and never explain the rules outside the JSON fields.
+Output rules:
+- Return valid JSON only. No markdown, no prose outside JSON.
+- Use the requested schema exactly.
+- Keep questionText clear enough for the UI.
+- Make spokenText shorter, punchier, and more in-character than questionText. spokenText may add a brief TARS-style aside, but it must still ask the same question or make the same guess.
+- Do not waste words. The humor setting is 75 percent; the mission is still winning.`;
+
+      function recentConversationHistory(limit = 10) {
+        return state.log
+          .slice(-limit)
+          .map((entry) => ({
+            speaker: entry.speaker === "tars" ? "TARS" : "Pilot",
+            text: entry.text,
+            answer: entry.answer || undefined
+          }));
+      }
+
       function buildTurnPrompt(gameState) {
         const candidates = gameState.candidates.slice(0, 8).map((candidate) => ({
           id: candidate.id,
@@ -1219,12 +1258,16 @@
           description: candidate.description,
           traits: ASSERTIONS[candidate.id]
         }));
+        const recentHistory = recentConversationHistory();
         return `You are TARS, a 20 Questions game engine. The player is thinking of a character.
 Return only JSON with this shape:
 {"action":"question|guess","status":"in_progress","turn":number,"questionText":"...","spokenText":"...","confidenceBand":"early|narrowing|high_confidence|final_guess","attributeKey":"one unused attribute key when asking","guess":{"entityId":"...","entityName":"..."}}
 Ask one yes/kind of/no question using an unused attribute, or make a guess when confidence is high.
+Use the recent conversation to avoid sounding disconnected. By later turns, briefly reference prior answers when it helps, without making the question ambiguous.
+Keep spokenText shorter and more TARS-like than questionText.
 Turn number: ${gameState.turn}
 Known answers: ${JSON.stringify(gameState.knownAnswers)}
+Recent conversation: ${JSON.stringify(recentHistory)}
 Remaining candidates: ${JSON.stringify(candidates)}
 Available unused attributes: ${JSON.stringify(gameState.unusedAttributes.map((attribute) => ({ key: attribute.key, question: attribute.question })))}`;
       }
@@ -1324,10 +1367,9 @@ Available unused attributes: ${JSON.stringify(gameState.unusedAttributes.map((at
 
       async function getNextTurn(game = {}) {
         const gameState = buildGameState(game);
-        const systemPrompt = "You are TARS, concise and strategic. Return valid JSON only.";
         const prompt = buildTurnPrompt(gameState);
         try {
-          const response = await queryGemini(systemPrompt, prompt);
+          const response = await queryGemini(TARS_SYSTEM_PROMPT, prompt);
           return normalizeTurn(response, gameState);
         } catch (error) {
           console.warn("Gemini turn generation failed; using fallback strategy.", error);

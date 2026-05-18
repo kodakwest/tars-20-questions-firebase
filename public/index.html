@@ -1052,7 +1052,7 @@
 
     <script type="module">
       import { initializeApp } from "firebase/app";
-      import { getAI, getTemplateGenerativeModel, VertexAIBackend } from "firebase/ai";
+      import { getAI, getTemplateGenerativeModel, GoogleAIBackend } from "firebase/ai";
       import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, where, getDocs, orderBy } from "firebase/firestore";
       import { getAuth, signInAnonymously } from "firebase/auth";
 
@@ -1079,7 +1079,7 @@
 
       const app = initializeApp(firebaseConfig);
       const db = getFirestore(app);
-      const ai = getAI(app, { backend: new VertexAIBackend(), location: "us-central1" });
+      const ai = getAI(app, { backend: new GoogleAIBackend() });
       const templateModel = getTemplateGenerativeModel(ai);
       const auth = getAuth(app);
 

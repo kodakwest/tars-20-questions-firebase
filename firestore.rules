@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /games/{gameId} {
+      allow read, write: if signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous";
+
+      match /turns/{turnId} {
+        allow read, write: if signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous";
+      }
+    }
+
+    match /outcomes/{outcomeId} {
+      allow create: if signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous";
+      allow read, update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read: if signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous";
+      allow write: if false;
+    }
+  }
+}

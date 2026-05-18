@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TARS 20 Questions</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #111418;
+        color: #f4f2ea;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+
+      main {
+        width: min(720px, calc(100vw - 32px));
+        display: grid;
+        gap: 20px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 2rem;
+        letter-spacing: 0;
+      }
+
+      .panel {
+        border: 1px solid #39404a;
+        border-radius: 8px;
+        padding: 24px;
+        background: #191f26;
+      }
+
+      #question {
+        min-height: 72px;
+        margin: 0;
+        font-size: 1.35rem;
+        line-height: 1.4;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      button {
+        border: 1px solid #5d6876;
+        border-radius: 6px;
+        padding: 12px 16px;
+        background: #27313d;
+        color: #f4f2ea;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+      }
+
+      #start {
+        background: #2f5f4f;
+        border-color: #4f9a80;
+      }
+
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: #b7c0ca;
+        font-size: 0.95rem;
+      }
+    </style>
+    <script type="importmap">
+{
+  "imports": {
+    "firebase/app": "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js",
+    "firebase/functions": "https://www.gstatic.com/firebasejs/12.13.0/firebase-functions.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js",
+    "firebase/auth": "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js"
+  }
+}
+    </script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>TARS 20 Questions</h1>
+      </header>
+      <section class="panel">
+        <p id="question">Loading Firebase. Please maintain a suspiciously neutral expression.</p>
+      </section>
+      <div class="controls">
+        <button id="start" type="button">Start New Game</button>
+        <button class="answer" type="button" data-answer="yes" disabled>Yes</button>
+        <button class="answer" type="button" data-answer="kind of" disabled>Kind Of</button>
+        <button class="answer" type="button" data-answer="no" disabled>No</button>
+      </div>
+      <div class="meta">
+        <span id="turn">Turn 0 / 20</span>
+        <span id="status">Idle</span>
+      </div>
+    </main>
+
+    <script type="module">
+      import { initializeApp } from "firebase/app";
+      import { getFunctions, httpsCallable } from "firebase/functions";
+      import { getFirestore } from "firebase/firestore";
+      import { getAuth, signInAnonymously } from "firebase/auth";
+
+      const firebaseConfig = {
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_PROJECT.firebaseapp.com",
+        projectId: "tars-20q",
+        storageBucket: "YOUR_PROJECT.appspot.com",
+        messagingSenderId: "YOUR_SENDER_ID",
+        appId: "YOUR_APP_ID"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      getFirestore(app);
+      const auth = getAuth(app);
+      const functions = getFunctions(app);
+      const startGame = httpsCallable(functions, "startGame");
+      const advanceGame = httpsCallable(functions, "advanceGame");
+
+      const startButton = document.querySelector("#start");
+      const answerButtons = Array.from(document.querySelectorAll(".answer"));
+      const questionEl = document.querySelector("#question");
+      const turnEl = document.querySelector("#turn");
+      const statusEl = document.querySelector("#status");
+
+      let gameId = null;
+      let busy = false;
+
+      function setBusy(nextBusy) {
+        busy = nextBusy;
+        startButton.disabled = busy;
+        answerButtons.forEach((button) => {
+          button.disabled = busy || !gameId;
+        });
+      }
+
+      function renderTurn(turn) {
+        questionEl.textContent = turn.questionText;
+        turnEl.textContent = `Turn ${turn.turn} / 20`;
+        statusEl.textContent = turn.status === "in_progress" ? turn.confidenceBand.replaceAll("_", " ") : turn.status;
+        if (turn.status !== "in_progress") {
+          answerButtons.forEach((button) => {
+            button.disabled = true;
+          });
+        }
+      }
+
+      async function ensureAuth() {
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+      }
+
+      startButton.addEventListener("click", async () => {
+        setBusy(true);
+        statusEl.textContent = "Starting";
+        questionEl.textContent = "Initializing reference library.";
+        try {
+          await ensureAuth();
+          const result = await startGame({ mode: "user_thinks", domain: "character" });
+          gameId = result.data.gameId;
+          renderTurn(result.data.turn);
+        } catch (error) {
+          questionEl.textContent = error instanceof Error ? error.message : "Unable to start game.";
+          statusEl.textContent = "Error";
+        } finally {
+          setBusy(false);
+        }
+      });
+
+      answerButtons.forEach((button) => {
+        button.addEventListener("click", async () => {
+          if (!gameId || busy) {
+            return;
+          }
+          setBusy(true);
+          statusEl.textContent = "Thinking";
+          try {
+            const result = await advanceGame({ gameId, previousAnswer: button.dataset.answer });
+            renderTurn(result.data.turn);
+          } catch (error) {
+            questionEl.textContent = error instanceof Error ? error.message : "Unable to advance game.";
+            statusEl.textContent = "Error";
+          } finally {
+            setBusy(false);
+          }
+        });
+      });
+
+      questionEl.textContent = "Ready. Think of a character.";
+      statusEl.textContent = "Ready";
+    </script>
+  </body>
+</html>

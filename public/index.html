@@ -1065,7 +1065,7 @@
       const app = initializeApp(firebaseConfig);
       const db = getFirestore(app);
       const ai = getAI(app, { backend: new GoogleAIBackend() });
-      const model = getGenerativeModel(ai, { model: "gemini-2.0-flash" });
+      const model = getGenerativeModel(ai, { model: "gemini-3-flash-preview" });
       const auth = getAuth(app);
 
       signInAnonymously(auth).catch((error) => {

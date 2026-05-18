@@ -1,6 +1,4 @@
-import { Timestamp } from "firebase-admin/firestore";
-import {
-  addTurn,
+import { addTurn,
   getAllEntities,
   getAssertionsForEntities,
   getAttributeStats,
@@ -75,7 +73,7 @@ export async function advanceGame(data: AdvanceGameInput): Promise<ClientTurnRes
   }
 
   const sanitizedResponse = sanitizeStrategistResponse(strategistResponse, referencePack, attributes, candidates);
-  const turn = makeTurn(nextTurnNumber, sanitizedResponse, candidates, allAssertions);
+  const turn = await makeTurn(nextTurnNumber, sanitizedResponse, candidates, allAssertions);
   await addTurn(game.id, turn);
   await updateGame(game.id, {
     turn: nextTurnNumber,
@@ -225,12 +223,12 @@ function forceGuess(candidates: Entity[], referencePack: GameReferencePack): Gem
   };
 }
 
-function makeTurn(
+async function makeTurn(
   turnNumber: number,
   response: GeminiTurnResponse,
   candidates: Entity[],
   assertions: Map<string, EntityAssertion[]>
-): Turn {
+): Promise<Turn> {
   const type = response.action === "guess" ? "guess" : response.action === "clarification" ? "clarification" : "question";
   return {
     turn: turnNumber,
@@ -245,7 +243,7 @@ function makeTurn(
       candidateCount: candidates.length
     },
     geminiRationaleSummary: response.rationaleSummary,
-    createdAt: Timestamp.now()
+    createdAt: (await import("firebase-admin/firestore")).Timestamp.now()
   };
 }
 

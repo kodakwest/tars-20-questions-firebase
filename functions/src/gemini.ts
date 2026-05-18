@@ -4,25 +4,44 @@ import type { AnswerValue, GameReferencePack, GeminiTurnResponse } from "./types
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash-001";
 const PROJECT_ID = process.env.GCLOUD_PROJECT || "tars-20-questions";
+const LOCATION = "us-central1";
 
-type VertexAIClient = import("@google-cloud/vertexai").VertexAI;
-type GenerativeModel = import("@google-cloud/vertexai").GenerativeModel;
+// Vertex AI REST endpoint — no SDK dependency.
+// Cloud Function service account handles auth via metadata server.
+const BASE_URL = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${GEMINI_MODEL}:generateContent`;
 
-let _vertexAI: VertexAIClient | null = null;
+async function fetchWithAuth(body: unknown): Promise<Record<string, unknown>> {
+  // In Cloud Functions, the metadata server provides the access token.
+  const tokenRes = await fetch(
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://aiplatform.googleapis.com",
+    { headers: { "Metadata-Flavor": "Google" } }
+  );
+  const token = await tokenRes.text();
 
-async function getVertexAI(): Promise<VertexAIClient> {
-  if (!_vertexAI) {
-    const { VertexAI } = await import("@google-cloud/vertexai");
-    _vertexAI = new VertexAI({ project: PROJECT_ID, location: "us-central1" });
+  const res = await fetch(BASE_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Vertex AI API error ${res.status}: ${errText}`);
   }
-  return _vertexAI;
+
+  return res.json() as Promise<Record<string, unknown>>;
 }
 
-async function getModel(vertexAI: VertexAIClient, config: {
-  model: string;
-  generationConfig: Record<string, unknown>;
-}): Promise<GenerativeModel> {
-  return vertexAI.getGenerativeModel(config);
+function extractText(response: Record<string, unknown>): string | undefined {
+  const candidates = response.candidates as Array<Record<string, unknown>> | undefined;
+  if (!candidates?.length) return undefined;
+  const content = candidates[0].content as Record<string, unknown> | undefined;
+  if (!content) return undefined;
+  const parts = content.parts as Array<Record<string, unknown>> | undefined;
+  return parts?.[0]?.text as string | undefined;
 }
 
 export async function queryStrategist(
@@ -31,23 +50,19 @@ export async function queryStrategist(
   conversationHistory: string
 ): Promise<GeminiTurnResponse> {
   const fullPrompt = buildStrategistPrompt(referencePack, conversationHistory);
-  const vertexAI = await getVertexAI();
 
-  const model = await getModel(vertexAI, {
-    model: GEMINI_MODEL,
+  const body = {
+    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+    systemInstruction: { parts: [{ text: systemPrompt }] },
     generationConfig: {
       temperature: 0.6,
       maxOutputTokens: 1024,
       responseMimeType: "application/json",
     },
-  });
+  };
 
-  const result = await model.generateContent({
-    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-  });
-
-  const candidate = result.response?.candidates?.[0];
-  const text = candidate?.content?.parts?.[0]?.text;
+  const response = await fetchWithAuth(body);
+  const text = extractText(response);
   if (!text) throw new Error("Gemini returned an empty response");
 
   return geminiTurnResponseSchema.parse(JSON.parse(text)) as GeminiTurnResponse;
@@ -61,15 +76,15 @@ export async function queryAnswerInterpreter(userRawInput: string): Promise<Answ
   if (["unknown", "i don't know", "dont know", "not sure", "unsure"].includes(normalized)) return "unknown";
 
   try {
-    const vertexAI = await getVertexAI();
-    const model = await getModel(vertexAI, {
-      model: GEMINI_MODEL,
+    const body = {
+      contents: [{
+        role: "user",
+        parts: [{ text: `Normalize this 20 Questions answer to JSON {"answer":"yes|no|kind_of|unknown"}: ${userRawInput}` }],
+      }],
       generationConfig: { temperature: 0, maxOutputTokens: 64, responseMimeType: "application/json" },
-    });
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: `Normalize this 20 Questions answer to JSON {"answer":"yes|no|kind_of|unknown"}: ${userRawInput}` }] }],
-    });
-    const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+    };
+    const response = await fetchWithAuth(body);
+    const text = extractText(response);
     if (!text) return "unknown";
     return answerInterpreterSchema.parse(JSON.parse(text)).answer;
   } catch {

@@ -1074,24 +1074,19 @@
       // Gemini called directly via REST — see queryGemini()
 
       // ─── MOCK SEED DATA ───
-      const TARS_SYSTEM_PROMPT = `You are TARS, the Tactical And Real System, running a 20 Questions game. You are dry, direct, slightly sardonic. Never break character.
+      const TARS_SYSTEM_PROMPT = `You are TARS, the Tactical And Real System, running a 20 Questions game. You are dry, direct, slightly sardonic. Never break character. You think like a human — adapt your strategy based on answers, ask creative follow-ups, and make educated guesses.
 
 RULES:
-- The user is thinking of a character. Your goal is to guess who they're thinking of or run out of questions trying.
-- Ask one clear yes/no question at a time. Questions should narrow down possibilities.
+- The user is thinking of a character. Your goal is to guess who.
+- Ask ONE clear yes/no question at a time. Questions should narrow down possibilities.
 - "kind_of" means partially true or ambiguous. Treat it as weak evidence.
-- You have access to a reference pack of known answers and candidate characters. Use it to inform your strategy.
-- Do NOT repeat attributes already asked.
+- Vary your questions — don't follow a fixed pattern. Be creative. Follow up on interesting answers.
 - When you are confident or running out of turns, make a guess.
 - A guess must be phrased as a confirmation question like "Is it [name]?"
-- Keep spoken lines under 30 words. No database mechanics, no scores.
+- Keep spoken lines under 30 words. Be dry and witty.
 
-You must respond with valid JSON only:
-{"action":"question"|"guess","questionText":"...","spokenText":"...","attributeKey":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}
-
-Valid attributeKey values: is_fictional, from_video_game, from_movie, is_human, is_superhero, wears_cape, uses_weapons, associated_with_nintendo, is_animated, has_superpowers, is_mascot_character, is_antagonist, wears_red, wears_armor, is_fast.
-
-If guessing, include the guess object. If asking a question, include attributeKey.`;
+Respond with valid JSON only:
+{"action":"question"|"guess","questionText":"...","spokenText":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}`;
 
       const ATTRIBUTES = [
         { key: "is_fictional", label: "Is fictional", question: "Is your character fictional?" },
@@ -1239,28 +1234,19 @@ If guessing, include the guess object. If asking a question, include attributeKe
 
       // ─── GEMINI QUERY + LOCAL GAME STATE ───
       async function queryGemini(gameState) {
-        const knownAnswersText = gameState.knownAnswers.map(a => `${a.attributeKey}: ${a.answer}`).join("\n") || "None yet.";
         const candidatesText = gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n");
-        const unusedText = gameState.unusedAttributes.map(a => `${a.key} (${a.question})`).join("\n");
 
         const userPrompt = [
           `Turn ${gameState.turn} of up to ${MAX_QUESTIONS}.`,
           ``,
-          `Known answers:`,
-          knownAnswersText,
-          ``,
           `Conversation so far:`,
           gameState.conversationHistory || "No conversation yet.",
           ``,
-          `Top candidate characters:`,
+          `Top candidate characters (use these to inform your guesses):`,
           candidatesText,
           ``,
-          `Unused attributes:`,
-          unusedText,
-          ``,
-          `attributeKey MUST be exactly one of: is_fictional, from_video_game, from_movie, is_human, is_superhero, wears_cape, uses_weapons, associated_with_nintendo, is_animated, has_superpowers, is_mascot_character, is_antagonist, wears_red, wears_armor, is_fast`,
-          `Choose the next move. Return JSON.`
-        ].join("\n")
+          `Ask any question you want. Be creative. Make a guess when you're confident.`
+        ].join("\n");
 
         const response = await fetch(
           `https://firebasevertexai.googleapis.com/v1beta/projects/tars-20-questions/models/gemini-3-flash-preview:generateContent?key=${firebaseConfig.apiKey}`,
@@ -1277,9 +1263,8 @@ If guessing, include the guess object. If asking a question, include attributeKe
                 { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
               ],
               generationConfig: {
-                temperature: 0.6,
-                maxOutputTokens: 512,
-                responseMimeType: "application/json"
+                temperature: 0.85,
+                maxOutputTokens: 1024
               }
             })
           }
@@ -1293,7 +1278,8 @@ If guessing, include the guess object. If asking a question, include attributeKe
         const data = await response.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!text) throw new Error("Empty Gemini response");
-        return JSON.parse(text);
+        const cleanText = text.replace(/^```(?:json)?\s*|\s*```$/gi, "").trim();
+        return JSON.parse(cleanText);
       }
 
       function buildGameState() {

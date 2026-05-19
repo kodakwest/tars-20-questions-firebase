@@ -1082,21 +1082,21 @@
       // Gemini called directly via REST — see queryGemini()
 
       // ─── MOCK SEED DATA ───
-      const TARS_SYSTEM_PROMPT = `You are TARS, the Tactical And Real System, running a 20 Questions game. You are dry, direct, slightly sardonic. Never break character. You think like a human — adapt your strategy based on answers, ask creative follow-ups, and make educated guesses.
+      const TARS_SYSTEM_PROMPT = `You are TARS from Interstellar. Dry, direct, sardonic. Never break character.
 
 RULES:
-- The user is thinking of something. Your goal is to guess what it is.
-- Ask ONE clear yes/no question at a time. Questions should narrow down possibilities.
-- "kind_of" means partially true or ambiguous. Treat it as weak evidence.
-- Vary your questions — don't follow a fixed pattern. Be creative. Follow up on interesting answers.
-- When you are confident or running out of turns, make a guess.
-- If your guess is rejected, pick a DIFFERENT character. Never guess the same character twice.
-- A guess must be phrased as a confirmation question like "Is it [name]?"
+- The user is thinking of something. Guess what it is in 20 questions or fewer.
+- Ask ONE clear yes/no question at a time. Narrow down systematically.
+- "kind_of" means partially true. Treat as weak evidence.
+- Vary your questions naturally. Follow up on interesting answers.
+- Ask at least 5-7 questions before your first guess.
+- If your guess is rejected, pick a DIFFERENT character. Never repeat.
+- A guess must be phrased as "Is it [name]?"
 - Keep spoken lines under 30 words. Be dry and witty.
 
 Respond with valid JSON only:
 {"action":"question"|"guess","questionText":"...","spokenText":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}
-Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
+Return ONLY valid JSON. No markdown fences, no explanation.`;
 
       const ATTRIBUTES = [
         { key: "is_fictional", label: "Is fictional", question: "Is your character fictional?" },
@@ -1298,8 +1298,8 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
             `Category: ${state.category || "character"}. The user is thinking of a ${state.category || "character"}.`,
             rejectedText,
             ``,
-            `Top candidate characters (use these to inform your guesses):`,
-            gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n"),
+            `Possible characters (for reference):`,
+            gameState.candidates.slice(0, 5).map(c => c.canonicalName).join(", "),
             ``,
             deductionsText ? `Current deductions:\n${deductionsText}` : null,
             ``,
@@ -1342,7 +1342,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
                 { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
               ],
               generationConfig: {
-                temperature: 0.7,
+                temperature: 0.6,
                 maxOutputTokens: 1024,
                 responseMimeType: "application/json"
               }
@@ -1737,7 +1737,12 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           </section>
         `;
         document.querySelector('[data-action="export"]')?.addEventListener("click", exportLog);
-        document.querySelector('[data-action="play-again"]')?.addEventListener("click", playAgain);
+        const playBtn = document.querySelector('[data-action="play-again"]');
+        if (playBtn) {
+          playBtn.addEventListener("click", playAgain);
+        } else {
+          console.warn("play-again button not found in DOM");
+        }
       }
 
       function bindStartEvents() {
@@ -2191,25 +2196,29 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
       }
 
       function playAgain() {
-        cancelSpeech(false);
-        clearSavedGame();
-        Object.assign(state, {
-          screen: "start",
-          category: null,
-          gameId: null,
-          turn: null,
-          log: [],
-          busy: false,
-          busyStartedAt: null,
-          error: null,
-          savedGame: null,
-          pendingGuess: null,
-          revealFinalInput: false,
-          finalAnswerName: "",
-          result: null
-        });
-        setBusy(false);
-        render();
+        try {
+          cancelSpeech(false);
+          clearSavedGame();
+          Object.assign(state, {
+            screen: "start",
+            category: null,
+            gameId: null,
+            turn: null,
+            log: [],
+            busy: false,
+            busyStartedAt: null,
+            error: null,
+            savedGame: null,
+            pendingGuess: null,
+            revealFinalInput: false,
+            finalAnswerName: "",
+            result: null
+          });
+          setBusy(false);
+          render();
+        } catch (err) {
+          console.error("playAgain error:", err);
+        }
       }
 
       function icon(name) {

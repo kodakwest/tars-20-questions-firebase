@@ -1086,7 +1086,8 @@ RULES:
 - Keep spoken lines under 30 words. Be dry and witty.
 
 Respond with valid JSON only:
-{"action":"question"|"guess","questionText":"...","spokenText":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}`;
+{"action":"question"|"guess","questionText":"...","spokenText":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}
+Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
 
       const ATTRIBUTES = [
         { key: "is_fictional", label: "Is fictional", question: "Is your character fictional?" },
@@ -1233,20 +1234,58 @@ Respond with valid JSON only:
       }
 
       // ─── GEMINI QUERY + LOCAL GAME STATE ───
-      async function queryGemini(gameState) {
-        const candidatesText = gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n");
+      function buildDeductionsText(gameState) {
+        const knownAnswers = gameState.knownAnswers;
+        if (!knownAnswers.length) return "";
+        return knownAnswers.map(a => {
+          const label = a.answer === "yes" ? "✓" : a.answer === "no" ? "✗" : "~";
+          return `${label} ${a.attributeKey}: ${a.answer}`;
+        }).join("\n");
+      }
 
-        const userPrompt = [
-          `Turn ${gameState.turn} of up to ${MAX_QUESTIONS}.`,
-          ``,
-          `Conversation so far:`,
-          gameState.conversationHistory || "No conversation yet.",
-          ``,
-          `Top candidate characters (use these to inform your guesses):`,
-          candidatesText,
-          ``,
-          `Ask any question you want. Be creative. Make a guess when you're confident.`
-        ].join("\n");
+      function extractJson(text) {
+        try { return JSON.parse(text); } catch {}
+        const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (fenceMatch) try { return JSON.parse(fenceMatch[1].trim()); } catch {}
+        const firstBrace = text.indexOf("{");
+        const lastBrace = text.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+          try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)); } catch {}
+        }
+        throw new Error("Could not extract JSON from response");
+      }
+
+      async function queryGemini(gameState) {
+        const contents = [];
+        const deductionsText = buildDeductionsText(gameState);
+
+        contents.push({
+          role: "user",
+          parts: [{ text: [
+            `Turn ${gameState.turn} of up to ${MAX_QUESTIONS}.`,
+            ``,
+            `Top candidate characters (use these to inform your guesses):`,
+            gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n"),
+            ``,
+            deductionsText ? `Current deductions:\n${deductionsText}` : null,
+            ``,
+            `Ask a question or make a guess. Return JSON only.`
+          ].filter(Boolean).join("\n") }]
+        });
+
+        for (const entry of state.log) {
+          if (entry.speaker === "tars" && entry.turn?.questionText) {
+            contents.push({
+              role: "model",
+              parts: [{ text: JSON.stringify(entry.turn) }]
+            });
+          } else if (entry.speaker === "user" && entry.answer) {
+            contents.push({
+              role: "user",
+              parts: [{ text: entry.answer === "kind_of" ? "Kind Of" : entry.answer === "yes" ? "Yes" : "No" }]
+            });
+          }
+        }
 
         const response = await fetch(
           `https://firebasevertexai.googleapis.com/v1beta/projects/tars-20-questions/models/gemini-3-flash-preview:generateContent?key=${firebaseConfig.apiKey}`,
@@ -1254,7 +1293,7 @@ Respond with valid JSON only:
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+              contents,
               systemInstruction: { parts: [{ text: TARS_SYSTEM_PROMPT }] },
               safetySettings: [
                 { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -1263,8 +1302,9 @@ Respond with valid JSON only:
                 { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
               ],
               generationConfig: {
-                temperature: 0.85,
-                maxOutputTokens: 1024
+                temperature: 0.7,
+                maxOutputTokens: 1024,
+                responseMimeType: "application/json"
               }
             })
           }
@@ -1278,8 +1318,7 @@ Respond with valid JSON only:
         const data = await response.json();
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!text) throw new Error("Empty Gemini response");
-        const cleanText = text.replace(/^```(?:json)?\s*|\s*```$/gi, "").trim();
-        return JSON.parse(cleanText);
+        return extractJson(text);
       }
 
       function buildGameState() {

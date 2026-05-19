@@ -1298,9 +1298,6 @@ Return ONLY valid JSON. No markdown fences, no explanation.`;
             `Category: ${state.category || "character"}. The user is thinking of a ${state.category || "character"}.`,
             rejectedText,
             ``,
-            `Possible characters (for reference):`,
-            gameState.candidates.slice(0, 5).map(c => c.canonicalName).join(", "),
-            ``,
             deductionsText ? `Current deductions:\n${deductionsText}` : null,
             ``,
             `Ask a question or make a guess. Return JSON only.`

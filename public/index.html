@@ -1089,11 +1089,19 @@ RULES:
 - Keep spoken lines under 30 words. No database mechanics, no scores.
 
 You must respond with valid JSON only:
-{"action":"question"|"guess","questionText":"...","spokenText":"...","attributeKey":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}
+{"action":"question"|"guess","questionType":"generic"|"contextual"|"disambiguating"|"creative"|"fallback","questionText":"...","spokenText":"...","attributeKey":"...","guess":{"entityName":"...","confidence":"low"|"medium"|"high"}}
 
 Valid attributeKey values: is_fictional, from_video_game, from_movie, is_human, is_superhero, wears_cape, uses_weapons, associated_with_nintendo, is_animated, has_superpowers, is_mascot_character, is_antagonist, wears_red, wears_armor, is_fast.
 
-If guessing, include the guess object. If asking from the fixed reference attributes, include attributeKey. Creative questions may omit attributeKey.`;
+If guessing, include the guess object. If asking from the fixed reference attributes, use one of the valid attributeKey values.
+
+Question variety matters.
+Do not overuse the same small set of generic attributes.
+After the first few turns, prefer contextual questions that test appearance, role, origin, abilities, setting, iconic traits, or media/franchise clues.
+You may create a new attributeKey when needed.
+The attributeKey must be short snake_case and describe the single trait being tested.
+The question must remain answerable with yes, no, or kind of.
+Do not ask trivia that requires exact knowledge.`;
 
       const ATTRIBUTES = [
         { key: "is_fictional", label: "Is fictional", question: "Is your character fictional?" },
@@ -1178,9 +1186,13 @@ If guessing, include the guess object. If asking from the fixed reference attrib
           .trim();
       }
 
+      function isFixedAttributeKey(attributeKey) {
+        return ATTRIBUTES.some((attribute) => attribute.key === attributeKey);
+      }
+
       function getKnownAnswers() {
         return state.log
-          .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question" && entry.turn.attributeKey && entry.turn.userAnswer)
+          .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question" && isFixedAttributeKey(entry.turn.attributeKey) && entry.turn.userAnswer)
           .map((entry) => ({ attributeKey: entry.turn.attributeKey, answer: entry.turn.userAnswer }));
       }
 
@@ -1189,9 +1201,86 @@ If guessing, include the guess object. If asking from the fixed reference attrib
           .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question")
           .map((entry) => ({
             attributeKey: entry.turn.attributeKey || inferAttributeKey(entry.turn.questionText || entry.text || ""),
+            questionType: entry.turn.questionType || "generic",
+            turn: entry.turn.turn || 0,
             questionText: entry.turn.questionText || entry.text || "",
             normalizedText: normalizeKey(entry.turn.questionText || entry.text || "")
           }));
+      }
+
+      function questionTypeStats(log = state.log) {
+        const questions = log
+          .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question")
+          .map((entry) => entry.turn);
+        const distribution = questions.reduce((acc, turn) => {
+          const type = normalizeQuestionType(turn.questionType, turn.attributeKey);
+          acc[type] = (acc[type] || 0) + 1;
+          return acc;
+        }, { generic: 0, contextual: 0, disambiguating: 0, creative: 0, fallback: 0 });
+        const questionsAfterTurn6 = questions.filter((turn) => turn.turn >= 6);
+        const genericAfterTurn6 = questionsAfterTurn6.filter((turn) => normalizeQuestionType(turn.questionType, turn.attributeKey) === "generic").length;
+        const contextualCreative = (distribution.contextual || 0) + (distribution.creative || 0);
+        const duplicates = countDuplicateQuestions(questions);
+        const invalidCreative = questions.filter((turn) => turn.invalidCreativeAttributeKey).length;
+        return {
+          total: questions.length,
+          distribution,
+          genericAfterTurn6,
+          genericAfterTurn6Rate: questionsAfterTurn6.length ? Number((genericAfterTurn6 / questionsAfterTurn6.length).toFixed(2)) : 0,
+          contextualCreative,
+          duplicates,
+          duplicateRate: questions.length ? Number((duplicates / questions.length).toFixed(2)) : 0,
+          invalidCreative,
+          invalidCreativeRate: questions.length ? Number((invalidCreative / questions.length).toFixed(2)) : 0
+        };
+      }
+
+      function countDuplicateQuestions(questions) {
+        const seenTexts = new Set();
+        const seenAttributes = new Set();
+        return questions.reduce((count, turn) => {
+          const normalizedText = normalizeKey(turn.questionText || turn.spokenText || "");
+          const duplicate = (turn.attributeKey && seenAttributes.has(turn.attributeKey)) || (normalizedText && seenTexts.has(normalizedText));
+          if (turn.attributeKey) seenAttributes.add(turn.attributeKey);
+          if (normalizedText) seenTexts.add(normalizedText);
+          return duplicate ? count + 1 : count;
+        }, 0);
+      }
+
+      function genericQuestionBudgetForTurn(turn) {
+        if (turn <= 5) return 3;
+        if (turn <= 12) return 2;
+        return 1;
+      }
+
+      function genericQuestionsUsedInRange(gameState) {
+        const turn = gameState.turn;
+        const minTurn = turn <= 5 ? 1 : turn <= 12 ? 6 : 13;
+        const maxTurn = turn <= 5 ? 5 : turn <= 12 ? 12 : MAX_QUESTIONS;
+        return gameState.askedQuestions.filter((question) => {
+          const askedTurn = question.turn || 0;
+          return askedTurn >= minTurn && askedTurn <= maxTurn && normalizeQuestionType(question.questionType, question.attributeKey) === "generic";
+        }).length;
+      }
+
+      function normalizeQuestionType(questionType, attributeKey) {
+        const value = String(questionType || "").toLowerCase();
+        if (["generic", "contextual", "disambiguating", "creative", "fallback"].includes(value)) return value;
+        if (attributeKey && isFixedAttributeKey(attributeKey)) return "generic";
+        return "creative";
+      }
+
+      function normalizeCreativeAttributeKey(attributeKey) {
+        const normalized = String(attributeKey || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .replace(/_+/g, "_");
+        if (!normalized || normalized.length > 36 || !/^[a-z][a-z0-9_]*$/.test(normalized)) return null;
+        const parts = normalized.split("_");
+        if (parts.length > 5 || parts.includes("and") || parts.includes("or")) return null;
+        if (isFixedAttributeKey(normalized)) return null;
+        return normalized;
       }
 
       function getRejectedGuesses() {
@@ -1355,6 +1444,7 @@ If guessing, include the guess object. If asking from the fixed reference attrib
           action: "question",
           status: "in_progress",
           turn: gameState.turn,
+          questionType: "fallback",
           questionText: attribute.question,
           spokenText: attribute.question,
           confidenceBand: gameState.turn < 5 ? "early" : gameState.turn < 12 ? "narrowing" : "high_confidence",
@@ -1369,6 +1459,11 @@ If guessing, include the guess object. If asking from the fixed reference attrib
         const candidatesText = gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: score ${c.score.toFixed(2)}; ${c.description}`).join("\n");
         const unusedText = gameState.unusedAttributes.map(a => `${a.key} (${a.question})`).join("\n");
         const askedText = gameState.askedQuestions.map(q => `${q.attributeKey || "creative"}: ${q.questionText}`).join("\n") || "None yet.";
+        const genericBudget = genericQuestionBudgetForTurn(gameState.turn);
+        const genericUsed = genericQuestionsUsedInRange(gameState);
+        const genericBudgetText = genericUsed >= genericBudget
+          ? "You have used enough generic questions. Ask a more contextual or disambiguating question."
+          : `Generic question budget for this turn range: ${genericUsed}/${genericBudget} used.`;
         const rejectedText = gameState.rejectedGuesses.map((guess) => {
           const attrs = guess.supportingAnswers?.map(a => `${a.attributeKey}=${a.answer}`).join(", ") || "no attribute answers";
           return `${guess.entityName} was rejected at turn ${guess.turn}. Evidence that tempted the guess: ${attrs}. Try a different angle before guessing a similar archetype.`;
@@ -1395,7 +1490,20 @@ If guessing, include the guess object. If asking from the fixed reference attrib
           `Unused attributes:`,
           unusedText,
           ``,
-          `If asking from the fixed reference attributes, use attributeKey from the list above. Creative questions may omit attributeKey.`,
+          `Question variety guidance:`,
+          `Question variety matters.`,
+          `Do not overuse the same small set of generic attributes.`,
+          `After the first few turns, prefer contextual questions that test appearance, role, origin, abilities, setting, iconic traits, or media/franchise clues.`,
+          `You may create a new attributeKey when needed.`,
+          `The attributeKey must be short snake_case and describe the single trait being tested.`,
+          `The question must remain answerable with yes, no, or kind of.`,
+          `Do not ask trivia that requires exact knowledge.`,
+          genericBudgetText,
+          ``,
+          `likelyArchetypes:`,
+          `Recommended question dimensions: appearance, source_medium, powers_or_abilities, hero_vs_villain, iconic_color, human_vs_nonhuman`,
+          ``,
+          `If asking from the fixed reference attributes, use attributeKey from the list above. If asking a creative/contextual/disambiguating question, create a short snake_case attributeKey for the single trait being tested.`,
           `Choose the next move. Return JSON.`
         ].join("\n")
 
@@ -1459,13 +1567,21 @@ If guessing, include the guess object. If asking from the fixed reference attrib
 
       function normalizeTurnResponse(response, gameState) {
         const validAttributeKeys = new Set(ATTRIBUTES.map((attribute) => attribute.key));
+        const responseAttributeKey = String(response.attributeKey || "");
+        const fixedAttributeKey = validAttributeKeys.has(responseAttributeKey) ? responseAttributeKey : inferAttributeKey(response.questionText);
+        const creativeAttributeKey = fixedAttributeKey ? null : normalizeCreativeAttributeKey(responseAttributeKey);
+        const invalidCreativeAttributeKey = Boolean(responseAttributeKey && !fixedAttributeKey && !creativeAttributeKey);
+        const attributeKey = fixedAttributeKey || creativeAttributeKey;
+        const action = response.action || "question";
         const turn = {
-          action: response.action || "question",
+          action,
           status: "in_progress",
           turn: gameState.turn,
+          questionType: action === "question" ? normalizeQuestionType(response.questionType, attributeKey) : null,
           questionText: response.questionText || (response.guess ? `Is it ${response.guess.entityName}?` : "I need a moment."),
           spokenText: response.spokenText || response.questionText || "",
-          attributeKey: validAttributeKeys.has(response.attributeKey) ? response.attributeKey : inferAttributeKey(response.questionText),
+          attributeKey,
+          invalidCreativeAttributeKey,
           confidenceBand: gameState.turn < 5 ? "early" : gameState.turn < 12 ? "narrowing" : gameState.turn >= 18 ? "final_guess" : "high_confidence",
           guess: response.guess ? { entityName: response.guess.entityName, confidence: response.guess.confidence || "medium" } : null
         };
@@ -1484,8 +1600,6 @@ If guessing, include the guess object. If asking from the fixed reference attrib
         if (isDuplicateQuestion(turn, gameState)) {
           return generateFallbackQuestion(gameState);
         }
-        // Allow creative questions through even without a fixed attributeKey.
-        // Only reject if they're text-duplicates of a previously asked question.
         return turn;
       }
 
@@ -1760,7 +1874,7 @@ If guessing, include the guess object. If asking from the fixed reference attrib
                 <div class="log-review">
                   ${state.log.length ? state.log.map((entry, index) => `
                     <div class="review-item">
-                      <div class="review-meta"><span>${index + 1}</span><span>${entry.speaker === "tars" ? "TARS" : "Pilot"}</span></div>
+                      <div class="review-meta"><span>${index + 1}</span><span>${entry.speaker === "tars" ? "TARS" : "Pilot"}</span>${entry.turn?.questionType ? `<span>${escapeHtml(entry.turn.questionType)}</span>` : ""}</div>
                       <p>${escapeHtml(entry.text)}</p>
                     </div>
                   `).join("") : `<p class="result-message">No log entries recorded.</p>`}
@@ -2002,10 +2116,24 @@ If guessing, include the guess object. If asking from the fixed reference attrib
             message: turn.questionText,
             answerName
           };
+          logQuestionTypeDistribution();
           state.pendingGuess = null;
           state.screen = "win";
           clearSavedGame();
         }
+      }
+
+      function logQuestionTypeDistribution() {
+        const stats = questionTypeStats();
+        console.info("TARS question type distribution", {
+          ...stats,
+          targets: {
+            genericAfterTurn6: "< 40%",
+            contextualCreativePerGame: "5+",
+            duplicateQuestions: "< 5%",
+            invalidCreativeQuestions: "< 10%"
+          }
+        });
       }
 
       function markLastQuestionAnswered(answer) {

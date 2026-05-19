@@ -2,7 +2,7 @@ import { answerInterpreterSchema, geminiTurnResponseSchema } from "./schemas.js"
 import { buildStrategistPrompt } from "./prompts.js";
 import type { AnswerValue, GameReferencePack, GeminiTurnResponse } from "./types.js";
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash-001";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 const PROJECT_ID = process.env.GCLOUD_PROJECT || "tars-20-questions";
 const LOCATION = "us-central1";
 
@@ -13,10 +13,11 @@ const BASE_URL = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PR
 async function fetchWithAuth(body: unknown): Promise<Record<string, unknown>> {
   // In Cloud Functions, the metadata server provides the access token.
   const tokenRes = await fetch(
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://aiplatform.googleapis.com",
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=https://www.googleapis.com/auth/cloud-platform",
     { headers: { "Metadata-Flavor": "Google" } }
   );
-  const token = await tokenRes.text();
+  const tokenData = await tokenRes.json() as { access_token: string };
+  const token = tokenData.access_token;
 
   const res = await fetch(BASE_URL, {
     method: "POST",

@@ -1,0 +1,28 @@
+{
+  "name": "tars-20q-firebase",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run tests/*.test.js && playwright test tests/e2e",
+    "test:unit": "vitest run tests/*.test.js",
+    "test:e2e": "playwright test tests/e2e"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kodakwest/tars-20-questions-firebase.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kodakwest/tars-20-questions-firebase/issues"
+  },
+  "homepage": "https://github.com/kodakwest/tars-20-questions-firebase#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.6"
+  }
+}

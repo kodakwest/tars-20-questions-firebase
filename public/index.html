@@ -1081,8 +1081,10 @@ RULES:
 - Ask one clear yes/no question at a time. Questions should narrow down possibilities.
 - "kind_of" means partially true or ambiguous. Treat it as weak evidence.
 - You have access to a reference pack of known answers and candidate characters. Use it to inform your strategy.
-- Do NOT repeat attributes already asked.
-- When you are confident or running out of turns, make a guess.
+- Do NOT repeat attributes or question wording already asked.
+- Only guess when the confidence gate says a guess is locally permitted, or on the final turn. A short candidate list is not enough.
+- If a previous guess was rejected, do not guess the same entity again. Treat the rejected guess as evidence that the obvious pattern was misleading and ask from a different angle.
+- If the local candidate list is empty, keep asking unused questions. Never end the game because candidates are empty.
 - A guess must be phrased as a confirmation question like "Is it [name]?"
 - Keep spoken lines under 30 words. No database mechanics, no scores.
 
@@ -1091,7 +1093,7 @@ You must respond with valid JSON only:
 
 Valid attributeKey values: is_fictional, from_video_game, from_movie, is_human, is_superhero, wears_cape, uses_weapons, associated_with_nintendo, is_animated, has_superpowers, is_mascot_character, is_antagonist, wears_red, wears_armor, is_fast.
 
-If guessing, include the guess object. If asking a question, include attributeKey.`;
+If guessing, include the guess object. If asking from the fixed reference attributes, include attributeKey. Creative questions may omit attributeKey.`;
 
       const ATTRIBUTES = [
         { key: "is_fictional", label: "Is fictional", question: "Is your character fictional?" },
@@ -1168,14 +1170,58 @@ If guessing, include the guess object. If asking a question, include attributeKe
       };
 
       // ─── GAME LOGIC ───
+      function normalizeKey(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/['"?.!,;:]/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
       function getKnownAnswers() {
         return state.log
           .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question" && entry.turn.attributeKey && entry.turn.userAnswer)
           .map((entry) => ({ attributeKey: entry.turn.attributeKey, answer: entry.turn.userAnswer }));
       }
 
-      function filterCandidates(knownAnswers = getKnownAnswers()) {
+      function getAskedQuestions() {
+        return state.log
+          .filter((entry) => entry.speaker === "tars" && entry.turn?.action === "question")
+          .map((entry) => ({
+            attributeKey: entry.turn.attributeKey || inferAttributeKey(entry.turn.questionText || entry.text || ""),
+            questionText: entry.turn.questionText || entry.text || "",
+            normalizedText: normalizeKey(entry.turn.questionText || entry.text || "")
+          }));
+      }
+
+      function getRejectedGuesses() {
+        return state.rejectedGuesses || [];
+      }
+
+      function findCharacterByName(name) {
+        const normalized = normalizeKey(name);
+        if (!normalized) return null;
+        return CHARACTERS.find((character) => {
+          const names = [character.canonicalName, character.id, ...(character.aliases || [])];
+          return names.some((item) => normalizeKey(item) === normalized);
+        }) || null;
+      }
+
+      function filterCandidates(knownAnswers = getKnownAnswers(), rejectedGuesses = getRejectedGuesses(), options = {}) {
+        const { allowHardMismatches = false } = options;
+        const rejectedIds = new Set(
+          rejectedGuesses
+            .map((guess) => guess.characterId || findCharacterByName(guess.entityName)?.id)
+            .filter(Boolean)
+        );
+        const rejectedTypes = new Set(
+          rejectedGuesses
+            .flatMap((guess) => guess.entityTypes || findCharacterByName(guess.entityName)?.entityTypes || [])
+            .filter(Boolean)
+        );
+
         return CHARACTERS
+          .filter((character) => !rejectedIds.has(character.id))
           .map((character) => {
             const score = knownAnswers.reduce((total, answer) => {
               const expected = ASSERTIONS[character.id]?.[answer.attributeKey];
@@ -1183,19 +1229,20 @@ If guessing, include the guess object. If asking a question, include attributeKe
               if (expected === "kind_of" || answer.answer === "kind_of") return total + 0.75;
               return total - 2;
             }, character.popularityPrior || 0);
+            const archetypePenalty = character.entityTypes?.some((type) => rejectedTypes.has(type)) ? Math.min(4, rejectedGuesses.length * 1.25) : 0;
             const hardMismatch = knownAnswers.some((answer) => {
               const expected = ASSERTIONS[character.id]?.[answer.attributeKey];
               return expected && expected !== "kind_of" && answer.answer !== "kind_of" && expected !== answer.answer;
             });
-            return { ...character, score, hardMismatch };
+            return { ...character, score: score - archetypePenalty, hardMismatch };
           })
-          .filter((candidate) => !candidate.hardMismatch || knownAnswers.length > 8)
+          .filter((candidate) => allowHardMismatches || !candidate.hardMismatch || knownAnswers.length > 8)
           .sort((a, b) => b.score - a.score || b.popularityPrior - a.popularityPrior);
       }
 
-      function bestAttributeFor(candidates, knownAnswers) {
+      function bestAttributeFor(candidates, knownAnswers, attributes = ATTRIBUTES) {
         const used = new Set(knownAnswers.map((answer) => answer.attributeKey));
-        return ATTRIBUTES
+        return attributes
           .filter((attribute) => !used.has(attribute.key))
           .map((attribute) => {
             const counts = candidates.reduce((acc, candidate) => {
@@ -1210,11 +1257,52 @@ If guessing, include the guess object. If asking a question, include attributeKe
           .sort((a, b) => b.split - a.split || b.known - a.known)[0]?.attribute;
       }
 
+      function confidenceProfile(gameState) {
+        const [top, runnerUp] = gameState.candidates;
+        const knownCount = gameState.knownAnswers.length;
+        const rejectedCount = gameState.rejectedGuesses.length;
+        const margin = top ? top.score - (runnerUp?.score ?? -Infinity) : -Infinity;
+        const viableCandidates = gameState.candidates.filter((candidate) => top && top.score - candidate.score <= 2.25).length;
+        const requiredAnswers = Math.min(13, 9 + rejectedCount * 2);
+        const requiredMargin = 6 + Math.min(4, rejectedCount * 1.75);
+        const canGuess =
+          Boolean(top) &&
+          (gameState.turn >= MAX_QUESTIONS ||
+            (knownCount >= requiredAnswers &&
+              margin >= requiredMargin &&
+              top.score >= 8 &&
+              viableCandidates <= Math.max(1, 2 - Math.min(1, rejectedCount))));
+        return { top, runnerUp, knownCount, margin, viableCandidates, requiredAnswers, requiredMargin, canGuess };
+      }
+
+      function isDuplicateQuestion(turn, gameState) {
+        if (turn.action !== "question") return false;
+        const normalizedText = normalizeKey(turn.questionText || turn.spokenText || "");
+        return gameState.askedQuestions.some((asked) => {
+          if (turn.attributeKey && asked.attributeKey === turn.attributeKey) return true;
+          return normalizedText && asked.normalizedText === normalizedText;
+        });
+      }
+
+      function inferAttributeKey(questionText) {
+        const normalized = normalizeKey(questionText);
+        if (!normalized) return null;
+        return ATTRIBUTES.find((attribute) => normalizeKey(attribute.question) === normalized)?.key || null;
+      }
+
+      function isRejectedGuessName(name, gameState) {
+        const normalized = normalizeKey(name);
+        return Boolean(normalized) && gameState.rejectedGuesses.some((guess) => normalizeKey(guess.entityName) === normalized);
+      }
+
       function generateFallbackQuestion(gameState) {
-        const candidates = gameState.candidates.length ? gameState.candidates : CHARACTERS;
-        const top = candidates[0];
-        const shouldGuess = gameState.turn >= MAX_QUESTIONS || candidates.length <= 1 || (gameState.turn >= 12 && top?.score > (candidates[1]?.score ?? -Infinity) + 4);
-        if (shouldGuess && top) {
+        const candidates = gameState.candidates || filterCandidates(gameState.knownAnswers, gameState.rejectedGuesses);
+        const questionCandidates = candidates.length
+          ? candidates
+          : filterCandidates(gameState.knownAnswers, gameState.rejectedGuesses, { allowHardMismatches: true });
+        const profile = confidenceProfile({ ...gameState, candidates });
+        const top = profile.top;
+        if (profile.canGuess && top) {
           return {
             action: "guess",
             status: "in_progress",
@@ -1225,7 +1313,44 @@ If guessing, include the guess object. If asking a question, include attributeKe
             guess: top
           };
         }
-        const attribute = bestAttributeFor(candidates, gameState.knownAnswers) || gameState.unusedAttributes[0] || ATTRIBUTES[0];
+        if (gameState.turn >= MAX_QUESTIONS && questionCandidates[0]) {
+          const finalTop = questionCandidates[0];
+          return {
+            action: "guess",
+            status: "in_progress",
+            turn: gameState.turn,
+            questionText: `Is it ${finalTop.canonicalName}?`,
+            spokenText: `Is it ${finalTop.canonicalName}?`,
+            confidenceBand: "final_guess",
+            guess: finalTop
+          };
+        }
+        const usedAttributes = new Set(gameState.askedQuestions.map((question) => question.attributeKey).filter(Boolean));
+        const unusedAttributes = ATTRIBUTES.filter((attribute) => !usedAttributes.has(attribute.key));
+        const attribute = bestAttributeFor(questionCandidates, gameState.knownAnswers, unusedAttributes) || unusedAttributes[0];
+        if (!attribute) {
+          const finalTop = top || questionCandidates[0];
+          if (finalTop) {
+            return {
+              action: "guess",
+              status: "in_progress",
+              turn: gameState.turn,
+              questionText: `Is it ${finalTop.canonicalName}?`,
+              spokenText: `Is it ${finalTop.canonicalName}?`,
+              confidenceBand: "final_guess",
+              guess: finalTop
+            };
+          }
+          return {
+            action: "game_over",
+            status: "lost",
+            turn: gameState.turn,
+            questionText: "I'm out of useful questions. You win.",
+            spokenText: "I'm out of useful questions. You win.",
+            confidenceBand: "final_guess",
+            guess: null
+          };
+        }
         return {
           action: "question",
           status: "in_progress",
@@ -1240,8 +1365,14 @@ If guessing, include the guess object. If asking a question, include attributeKe
       // ─── GEMINI QUERY + LOCAL GAME STATE ───
       async function queryGemini(gameState) {
         const knownAnswersText = gameState.knownAnswers.map(a => `${a.attributeKey}: ${a.answer}`).join("\n") || "None yet.";
-        const candidatesText = gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n");
+        const profile = confidenceProfile(gameState);
+        const candidatesText = gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: score ${c.score.toFixed(2)}; ${c.description}`).join("\n");
         const unusedText = gameState.unusedAttributes.map(a => `${a.key} (${a.question})`).join("\n");
+        const askedText = gameState.askedQuestions.map(q => `${q.attributeKey || "creative"}: ${q.questionText}`).join("\n") || "None yet.";
+        const rejectedText = gameState.rejectedGuesses.map((guess) => {
+          const attrs = guess.supportingAnswers?.map(a => `${a.attributeKey}=${a.answer}`).join(", ") || "no attribute answers";
+          return `${guess.entityName} was rejected at turn ${guess.turn}. Evidence that tempted the guess: ${attrs}. Try a different angle before guessing a similar archetype.`;
+        }).join("\n") || "None yet.";
 
         const userPrompt = [
           `Turn ${gameState.turn} of up to ${MAX_QUESTIONS}.`,
@@ -1249,18 +1380,27 @@ If guessing, include the guess object. If asking a question, include attributeKe
           `Known answers:`,
           knownAnswersText,
           ``,
+          `Questions already asked. Do not repeat these by attribute or wording:`,
+          askedText,
+          ``,
+          `Rejected guesses. Do not guess these again, and treat each rejection as evidence that the current pattern is misleading:`,
+          rejectedText,
+          ``,
           `Top candidate characters:`,
           candidatesText,
+          ``,
+          `Confidence gate: known attribute answers=${profile.knownCount}, close candidates=${profile.viableCandidates}, leader margin=${Number.isFinite(profile.margin) ? profile.margin.toFixed(2) : "none"}.`,
+          profile.canGuess ? `A guess is locally permitted if it is not rejected.` : `Do not guess yet. Ask the best unused, non-duplicate question.`,
           ``,
           `Unused attributes:`,
           unusedText,
           ``,
-          `attributeKey MUST be exactly one of: is_fictional, from_video_game, from_movie, is_human, is_superhero, wears_cape, uses_weapons, associated_with_nintendo, is_animated, has_superpowers, is_mascot_character, is_antagonist, wears_red, wears_armor, is_fast`,
+          `If asking from the fixed reference attributes, use attributeKey from the list above. Creative questions may omit attributeKey.`,
           `Choose the next move. Return JSON.`
         ].join("\n")
 
         const response = await fetch(
-          `https://firebasevertexai.googleapis.com/v1beta/projects/tars-20-questions/models/gemini-3-flash-preview:generateContent?key=${firebaseConfig.apiKey}`,
+          `https://firebasevertexai.googleapis.com/v1beta/projects/tars-20-questions/models/gemini-3.1-flash-lite:generateContent?key=${firebaseConfig.apiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1294,15 +1434,14 @@ If guessing, include the guess object. If asking a question, include attributeKe
       }
 
       function buildGameState() {
-        const knownAnswers = state.log
-          .filter(e => e.speaker === "tars" && e.turn?.action === "question" && e.turn.attributeKey && e.turn.userAnswer)
-          .map(e => ({ attributeKey: e.turn.attributeKey, answer: e.turn.userAnswer }));
-
-        const askedAttributes = new Set(knownAnswers.map(a => a.attributeKey));
-        const candidates = filterCandidates(knownAnswers);
+        const knownAnswers = getKnownAnswers();
+        const askedQuestions = getAskedQuestions();
+        const rejectedGuesses = getRejectedGuesses();
+        const askedAttributes = new Set(askedQuestions.map(a => a.attributeKey).filter(Boolean));
+        const candidates = filterCandidates(knownAnswers, rejectedGuesses);
         const unusedAttributes = ATTRIBUTES.filter(a => !askedAttributes.has(a.key));
 
-        return { turn: state.turn?.turn ?? 0, knownAnswers, candidates, unusedAttributes };
+        return { turn: state.turn?.turn ?? 0, knownAnswers, askedQuestions, rejectedGuesses, candidates, unusedAttributes };
       }
 
       async function getNextTurn(answer) {
@@ -1319,16 +1458,34 @@ If guessing, include the guess object. If asking a question, include attributeKe
       }
 
       function normalizeTurnResponse(response, gameState) {
+        const validAttributeKeys = new Set(ATTRIBUTES.map((attribute) => attribute.key));
         const turn = {
           action: response.action || "question",
           status: "in_progress",
           turn: gameState.turn,
           questionText: response.questionText || (response.guess ? `Is it ${response.guess.entityName}?` : "I need a moment."),
           spokenText: response.spokenText || response.questionText || "",
-          attributeKey: response.attributeKey || null,
+          attributeKey: validAttributeKeys.has(response.attributeKey) ? response.attributeKey : inferAttributeKey(response.questionText),
           confidenceBand: gameState.turn < 5 ? "early" : gameState.turn < 12 ? "narrowing" : gameState.turn >= 18 ? "final_guess" : "high_confidence",
           guess: response.guess ? { entityName: response.guess.entityName, confidence: response.guess.confidence || "medium" } : null
         };
+        if (gameState.turn >= MAX_QUESTIONS && turn.action !== "guess") {
+          return generateFallbackQuestion(gameState);
+        }
+        if (turn.action === "guess") {
+          const profile = confidenceProfile(gameState);
+          const guessName = turn.guess?.entityName || extractGuessName(turn.questionText);
+          if (!profile.canGuess || isRejectedGuessName(guessName, gameState)) {
+            return generateFallbackQuestion(gameState);
+          }
+          turn.confidenceBand = gameState.turn >= MAX_QUESTIONS ? "final_guess" : "high_confidence";
+          return turn;
+        }
+        if (isDuplicateQuestion(turn, gameState)) {
+          return generateFallbackQuestion(gameState);
+        }
+        // Allow creative questions through even without a fixed attributeKey.
+        // Only reject if they're text-duplicates of a previously asked question.
         return turn;
       }
 
@@ -1351,6 +1508,7 @@ If guessing, include the guess object. If asking a question, include attributeKe
         isSpeaking: false,
         isListening: false,
         pendingGuess: null,
+        rejectedGuesses: [],
         revealFinalInput: false,
         finalAnswerName: "",
         result: null,
@@ -1696,6 +1854,7 @@ If guessing, include the guess object. If asking a question, include attributeKe
         state.gameId = "local-" + id();
         state.turn = null;
         state.pendingGuess = null;
+        state.rejectedGuesses = [];
         state.result = null;
         state.screen = "game";
         clearSavedGame();
@@ -1731,6 +1890,7 @@ If guessing, include the guess object. If asking a question, include attributeKe
           voiceMode: saved.voiceMode || "minimal",
           voiceName: saved.voiceName,
           pendingGuess: saved.pendingGuess,
+          rejectedGuesses: Array.isArray(saved.rejectedGuesses) ? saved.rejectedGuesses : [],
           finalAnswerName: saved.finalAnswerName || "",
           result: saved.result,
           error: null,
@@ -1743,6 +1903,7 @@ If guessing, include the guess object. If asking a question, include attributeKe
       async function submitAnswer(answer) {
         if (state.busy || !state.gameId || state.pendingGuess) return;
         cancelSpeech();
+        markLastQuestionAnswered(answer);
         state.log.push({ id: id(), speaker: "user", text: labelForAnswer(answer), answer });
         state.busy = true;
         state.error = null;
@@ -1770,7 +1931,25 @@ If guessing, include the guess object. If asking a question, include attributeKe
         }
         cancelSpeech();
         const guessName = state.pendingGuess.entityName || "that";
+        if (!correct) recordRejectedGuess(state.pendingGuess);
         state.log.push({ id: id(), speaker: "user", text: correct ? "Yes." : state.finalAnswerName ? `No. It was ${state.finalAnswerName}.` : "No.", answer: correct ? "yes" : "no" });
+        if (correct || state.pendingGuess.final) {
+          const terminalTurn = {
+            action: "game_over",
+            status: correct ? "won" : "lost",
+            turn: state.pendingGuess.turn?.turn || questionCount(),
+            questionText: correct ? `Correct. It was ${guessName}.` : `I'm stumped. It was ${state.finalAnswerName}.`,
+            spokenText: correct ? `Correct. It was ${guessName}.` : `I'm stumped. It was ${state.finalAnswerName}.`,
+            confidenceBand: "final_guess",
+            guess: correct ? { entityName: guessName, confidence: "high" } : null
+          };
+          state.error = null;
+          state.revealFinalInput = false;
+          applyTurn(terminalTurn, { append: true, fallbackAnswerName: correct ? guessName : state.finalAnswerName });
+          speakTurn(terminalTurn);
+          render();
+          return;
+        }
         state.busy = true;
         state.error = null;
         state.revealFinalInput = false;
@@ -1827,6 +2006,24 @@ If guessing, include the guess object. If asking a question, include attributeKe
           state.screen = "win";
           clearSavedGame();
         }
+      }
+
+      function markLastQuestionAnswered(answer) {
+        const entry = [...state.log].reverse().find((item) => item.speaker === "tars" && item.turn?.action === "question" && !item.turn.userAnswer);
+        if (entry?.turn) entry.turn.userAnswer = answer;
+      }
+
+      function recordRejectedGuess(pendingGuess) {
+        const entityName = pendingGuess?.entityName || extractGuessName(pendingGuess?.turn?.questionText);
+        if (!entityName || isRejectedGuessName(entityName, buildGameState())) return;
+        const character = findCharacterByName(entityName);
+        state.rejectedGuesses.push({
+          entityName,
+          characterId: character?.id || null,
+          entityTypes: character?.entityTypes || [],
+          turn: pendingGuess?.turn?.turn || questionCount(),
+          supportingAnswers: getKnownAnswers()
+        });
       }
 
       function labelForAnswer(answer) {
@@ -1962,6 +2159,7 @@ If guessing, include the guess object. If asking a question, include attributeKe
           voiceMode: state.voiceMode,
           voiceName: state.voiceName,
           pendingGuess: state.pendingGuess,
+          rejectedGuesses: state.rejectedGuesses,
           finalAnswerName: state.finalAnswerName,
           result: state.result
         };
@@ -2058,6 +2256,7 @@ If guessing, include the guess object. If asking a question, include attributeKe
           error: null,
           savedGame: null,
           pendingGuess: null,
+          rejectedGuesses: [],
           revealFinalInput: false,
           finalAnswerName: "",
           result: null

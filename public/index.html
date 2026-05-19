@@ -1082,6 +1082,7 @@ RULES:
 - "kind_of" means partially true or ambiguous. Treat it as weak evidence.
 - Vary your questions — don't follow a fixed pattern. Be creative. Follow up on interesting answers.
 - When you are confident or running out of turns, make a guess.
+- If your guess is rejected, pick a DIFFERENT character. Never guess the same character twice.
 - A guess must be phrased as a confirmation question like "Is it [name]?"
 - Keep spoken lines under 30 words. Be dry and witty.
 
@@ -1243,6 +1244,25 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         }).join("\n");
       }
 
+      function buildRejectedGuessesText() {
+        const rejected = [];
+        for (let i = 0; i < state.log.length; i++) {
+          const entry = state.log[i];
+          if (entry.speaker === "tars" && entry.turn?.action === "guess" && entry.turn?.guess?.entityName) {
+            const guessName = entry.turn.guess.entityName;
+            for (let j = i + 1; j < state.log.length; j++) {
+              if (state.log[j].speaker === "user") {
+                if (state.log[j].answer === "no") {
+                  rejected.push(guessName);
+                }
+                break;
+              }
+            }
+          }
+        }
+        return [...new Set(rejected)];
+      }
+
       function extractJson(text) {
         try { return JSON.parse(text); } catch {}
         const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
@@ -1258,12 +1278,17 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
       async function queryGemini(gameState) {
         const contents = [];
         const deductionsText = buildDeductionsText(gameState);
+        const rejectedGuesses = buildRejectedGuessesText();
+        const rejectedText = rejectedGuesses.length
+          ? `Already guessed and rejected: ${rejectedGuesses.join(", ")}. Do NOT guess these again.`
+          : null;
 
         contents.push({
           role: "user",
           parts: [{ text: [
             `Turn ${gameState.turn} of up to ${MAX_QUESTIONS}.`,
             `Category: ${state.category || "character"}. The user is thinking of a ${state.category || "character"}.`,
+            rejectedText,
             ``,
             `Top candidate characters (use these to inform your guesses):`,
             gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n"),
@@ -1280,10 +1305,10 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
               role: "model",
               parts: [{ text: entry.turn.spokenText || entry.turn.questionText }]
             });
-          } else if (entry.speaker === "user" && entry.answer) {
+          } else if (entry.speaker === "user" && entry.text) {
             contents.push({
               role: "user",
-              parts: [{ text: entry.answer === "kind_of" ? "Kind Of" : entry.answer === "yes" ? "Yes" : "No" }]
+              parts: [{ text: entry.text }]
             });
           }
         }

@@ -1249,6 +1249,9 @@ If guessing, include the guess object. If asking a question, include attributeKe
           `Known answers:`,
           knownAnswersText,
           ``,
+          `Conversation so far:`,
+          gameState.conversationHistory || "No conversation yet.",
+          ``,
           `Top candidate characters:`,
           candidatesText,
           ``,
@@ -1294,15 +1297,41 @@ If guessing, include the guess object. If asking a question, include attributeKe
       }
 
       function buildGameState() {
-        const knownAnswers = state.log
-          .filter(e => e.speaker === "tars" && e.turn?.action === "question" && e.turn.attributeKey && e.turn.userAnswer)
-          .map(e => ({ attributeKey: e.turn.attributeKey, answer: e.turn.userAnswer }));
+        const knownAnswers = [];
+        for (let i = 0; i < state.log.length; i++) {
+          const entry = state.log[i];
+          if (entry.speaker === "tars" && entry.turn?.action === "question" && entry.turn.attributeKey) {
+            for (let j = i + 1; j < state.log.length; j++) {
+              if (state.log[j].speaker === "user" && state.log[j].answer) {
+                knownAnswers.push({ attributeKey: entry.turn.attributeKey, answer: state.log[j].answer });
+                break;
+              }
+            }
+          }
+        }
 
         const askedAttributes = new Set(knownAnswers.map(a => a.attributeKey));
         const candidates = filterCandidates(knownAnswers);
         const unusedAttributes = ATTRIBUTES.filter(a => !askedAttributes.has(a.key));
+        const historyLines = [];
+        state.log.forEach(e => {
+          if (e.speaker === "tars") {
+            const turn = e.turn;
+            if (turn?.action === "guess") {
+              historyLines.push(`TARS: I guess ${turn.guess?.entityName || "?"}`);
+            } else if (turn?.spokenText || turn?.questionText) {
+              historyLines.push(`TARS: ${turn.spokenText || turn.questionText}`);
+            } else if (turn?.action === "clarification") {
+              historyLines.push(`TARS: ${e.text}`);
+            } else {
+              historyLines.push(`TARS: ${e.text}`);
+            }
+          } else if (e.speaker === "user") {
+            historyLines.push(`User: ${labelForAnswer(e.answer || "")}`);
+          }
+        });
 
-        return { turn: state.turn?.turn ?? 0, knownAnswers, candidates, unusedAttributes };
+        return { turn: state.turn?.turn ?? 0, knownAnswers, candidates, unusedAttributes, conversationHistory: historyLines.join("\n") };
       }
 
       async function getNextTurn(answer) {
@@ -1744,6 +1773,10 @@ If guessing, include the guess object. If asking a question, include attributeKe
         if (state.busy || !state.gameId || state.pendingGuess) return;
         cancelSpeech();
         state.log.push({ id: id(), speaker: "user", text: labelForAnswer(answer), answer });
+        const prevTars = [...state.log].reverse().find(
+          e => e.speaker === "tars" && e.turn && e.turn.attributeKey && e.turn.action === "question" && !e.turn.userAnswer
+        );
+        if (prevTars?.turn) prevTars.turn.userAnswer = answer;
         state.busy = true;
         state.error = null;
         saveGame();
@@ -1771,6 +1804,10 @@ If guessing, include the guess object. If asking a question, include attributeKe
         cancelSpeech();
         const guessName = state.pendingGuess.entityName || "that";
         state.log.push({ id: id(), speaker: "user", text: correct ? "Yes." : state.finalAnswerName ? `No. It was ${state.finalAnswerName}.` : "No.", answer: correct ? "yes" : "no" });
+        const prevTars = [...state.log].reverse().find(
+          e => e.speaker === "tars" && e.turn && e.turn.attributeKey && e.turn.action === "question" && !e.turn.userAnswer
+        );
+        if (prevTars?.turn) prevTars.turn.userAnswer = correct ? "yes" : "no";
         state.busy = true;
         state.error = null;
         state.revealFinalInput = false;

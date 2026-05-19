@@ -1077,7 +1077,7 @@
       const TARS_SYSTEM_PROMPT = `You are TARS, the Tactical And Real System, running a 20 Questions game. You are dry, direct, slightly sardonic. Never break character. You think like a human — adapt your strategy based on answers, ask creative follow-ups, and make educated guesses.
 
 RULES:
-- The user is thinking of a character. Your goal is to guess who.
+- The user is thinking of something. Your goal is to guess what it is.
 - Ask ONE clear yes/no question at a time. Questions should narrow down possibilities.
 - "kind_of" means partially true or ambiguous. Treat it as weak evidence.
 - Vary your questions — don't follow a fixed pattern. Be creative. Follow up on interesting answers.
@@ -1263,6 +1263,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           role: "user",
           parts: [{ text: [
             `Turn ${gameState.turn} of up to ${MAX_QUESTIONS}.`,
+            `Category: ${state.category || "character"}. The user is thinking of a ${state.category || "character"}.`,
             ``,
             `Top candidate characters (use these to inform your guesses):`,
             gameState.candidates.slice(0, 5).map(c => `${c.canonicalName}: ${c.description}`).join("\n"),
@@ -1277,7 +1278,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           if (entry.speaker === "tars" && entry.turn?.questionText) {
             contents.push({
               role: "model",
-              parts: [{ text: JSON.stringify(entry.turn) }]
+              parts: [{ text: entry.turn.spokenText || entry.turn.questionText }]
             });
           } else if (entry.speaker === "user" && entry.answer) {
             contents.push({
@@ -1839,13 +1840,27 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         saveGame();
         render();
         try {
-          const turn = await getNextTurn(correct ? "yes" : "no");
-          if (turn.status === "lost" && state.finalAnswerName) {
-            turn.questionText = `I'm stumped. It was ${state.finalAnswerName}.`;
+          if (correct) {
+            const winTurn = {
+              action: "guess",
+              status: "won",
+              turn: state.turn?.turn || 0,
+              questionText: `Got it! It's ${guessName}.`,
+              spokenText: `Got it! It's ${guessName}.`,
+              guess: state.pendingGuess.turn?.guess || { entityName: guessName, confidence: "high" }
+            };
+            applyTurn(winTurn, { append: true, fallbackAnswerName: guessName });
+            saveGame();
+            speakTurn(winTurn);
+          } else {
+            const turn = await getNextTurn("no");
+            if (turn.status === "lost" && state.finalAnswerName) {
+              turn.questionText = `I'm stumped. It was ${state.finalAnswerName}.`;
+            }
+            applyTurn(turn, { append: true, fallbackAnswerName: state.finalAnswerName });
+            saveGame();
+            speakTurn(turn);
           }
-          applyTurn(turn, { append: true, fallbackAnswerName: correct ? guessName : state.finalAnswerName });
-          saveGame();
-          speakTurn(turn);
         } catch (error) {
           state.error = readableError(error, "Network error. TARS could not confirm the guess.");
         } finally {

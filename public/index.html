@@ -676,10 +676,18 @@
 
       .loading-row {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 8px;
         color: var(--ink-dim);
         font-size: 13px;
+      }
+
+      .loading-note {
+        flex-basis: 100%;
+        padding-left: 18px;
+        color: rgba(242, 240, 232, 0.58);
+        font-size: 12px;
       }
 
       .error-box {
@@ -1313,11 +1321,17 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           }
         }
 
-        const response = await fetch(
-          `https://firebasevertexai.googleapis.com/v1beta/projects/tars-20-questions/models/gemini-3-flash-preview:generateContent?key=${firebaseConfig.apiKey}`,
-          {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 20000);
+
+        let response;
+        try {
+          response = await fetch(
+            `https://firebasevertexai.googleapis.com/v1beta/projects/tars-20-questions/models/gemini-3.1-flash-lite:generateContent?key=${firebaseConfig.apiKey}`,
+            {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
             body: JSON.stringify({
               contents,
               systemInstruction: { parts: [{ text: TARS_SYSTEM_PROMPT }] },
@@ -1333,8 +1347,16 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
                 responseMimeType: "application/json"
               }
             })
+            }
+          );
+          clearTimeout(timeout);
+        } catch (err) {
+          clearTimeout(timeout);
+          if (err?.name === "AbortError") {
+            throw new Error("Gemini API timed out after 20s");
           }
-        );
+          throw err;
+        }
 
         if (!response.ok) {
           const errText = await response.text();
@@ -1423,6 +1445,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         turn: null,
         log: [],
         busy: false,
+        busyStartedAt: null,
         error: null,
         savedGame: loadSavedGame(),
         voiceMode: loadVoiceMode(),
@@ -1436,6 +1459,23 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         result: null,
         saveStatus: "idle"
       };
+
+      let busyNoticeTimer = null;
+
+      function setBusy(isBusy) {
+        state.busy = isBusy;
+        state.busyStartedAt = isBusy ? Date.now() : null;
+        if (busyNoticeTimer) {
+          clearTimeout(busyNoticeTimer);
+          busyNoticeTimer = null;
+        }
+        if (isBusy) {
+          busyNoticeTimer = setTimeout(() => {
+            busyNoticeTimer = null;
+            if (state.busy) render();
+          }, 10000);
+        }
+      }
 
       function id() {
         if (crypto?.randomUUID) return crypto.randomUUID();
@@ -1560,6 +1600,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
       function renderGameScreen() {
         const count = questionCount();
         const left = questionsLeft();
+        const showBusyNote = state.busy && state.busyStartedAt && Date.now() - state.busyStartedAt > 10000;
         appEl.innerHTML = `
           <section class="screen game-screen">
             <header class="game-header">
@@ -1591,7 +1632,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
             <div class="chat" id="chat">
               <div class="chat-inner">
                 ${state.log.map(logEntryMarkup).join("")}
-                ${state.busy ? `<div class="loading-row"><span class="dot"></span><span>TARS is judging the phrasing.</span></div>` : ""}
+                ${state.busy ? `<div class="loading-row"><span class="dot"></span><span>TARS is judging the phrasing.</span>${showBusyNote ? `<span class="loading-note">Taking longer than expected. Fallback will engage if the API does not respond.</span>` : ""}</div>` : ""}
               </div>
               ${state.error ? `<div class="error-box" role="alert">${escapeHtml(state.error)}</div>` : ""}
             </div>
@@ -1770,7 +1811,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           return;
         }
         cancelSpeech();
-        state.busy = true;
+        setBusy(true);
         state.error = null;
         state.log = [];
         state.gameId = "local-" + id();
@@ -1788,7 +1829,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         } catch (error) {
           state.error = readableError(error, "Network error. TARS failed to start the game.");
         } finally {
-          state.busy = false;
+          setBusy(false);
           render();
         }
       }
@@ -1814,8 +1855,10 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           finalAnswerName: saved.finalAnswerName || "",
           result: saved.result,
           error: null,
-          busy: false
+          busy: false,
+          busyStartedAt: null
         });
+        setBusy(false);
         if (state.result) state.screen = "win";
         render();
       }
@@ -1828,7 +1871,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           e => e.speaker === "tars" && e.turn && e.turn.attributeKey && e.turn.action === "question" && !e.turn.userAnswer
         );
         if (prevTars?.turn) prevTars.turn.userAnswer = answer;
-        state.busy = true;
+        setBusy(true);
         state.error = null;
         saveGame();
         render();
@@ -1840,7 +1883,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         } catch (error) {
           state.error = readableError(error, "Network error. TARS could not process your answer.");
         } finally {
-          state.busy = false;
+          setBusy(false);
           render();
         }
       }
@@ -1859,7 +1902,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           e => e.speaker === "tars" && e.turn && e.turn.attributeKey && e.turn.action === "question" && !e.turn.userAnswer
         );
         if (prevTars?.turn) prevTars.turn.userAnswer = correct ? "yes" : "no";
-        state.busy = true;
+        setBusy(true);
         state.error = null;
         state.revealFinalInput = false;
         saveGame();
@@ -1889,7 +1932,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
         } catch (error) {
           state.error = readableError(error, "Network error. TARS could not confirm the guess.");
         } finally {
-          state.busy = false;
+          setBusy(false);
           render();
         }
       }
@@ -2157,6 +2200,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           turn: null,
           log: [],
           busy: false,
+          busyStartedAt: null,
           error: null,
           savedGame: null,
           pendingGuess: null,
@@ -2164,6 +2208,7 @@ Return ONLY valid JSON. No markdown fences, no explanation, no extra text.`;
           finalAnswerName: "",
           result: null
         });
+        setBusy(false);
         render();
       }
 
